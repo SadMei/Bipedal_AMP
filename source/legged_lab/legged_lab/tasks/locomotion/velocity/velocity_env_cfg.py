@@ -17,19 +17,13 @@ from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sensors import ContactSensorCfg, RayCasterCfg, patterns
+from isaaclab.sensors import ContactSensorCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
 import legged_lab.tasks.locomotion.velocity.mdp as mdp
-
-##
-# Pre-defined configs
-##
-from isaaclab.terrains.config.rough import ROUGH_TERRAINS_CFG  # isort: skip
-
 
 ##
 # Scene definition
@@ -225,6 +219,7 @@ class RewardsCfg:
         func=mdp.track_ang_vel_z_exp, weight=0.5, params={"command_name": "base_velocity", "std": math.sqrt(0.25)}
     )
 
+
 @configclass
 class TerminationsCfg:
     """Termination terms for the MDP."""
@@ -235,6 +230,7 @@ class TerminationsCfg:
         params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names="base"), "threshold": 1.0},
     )
     bad_orientation = DoneTerm(func=mdp.bad_orientation, params={"limit_angle": math.radians(45.0)})
+    root_height_below_minimum = DoneTerm(func=mdp.root_height_below_minimum, params={"minimum_height": 0.05})
 
 
 @configclass

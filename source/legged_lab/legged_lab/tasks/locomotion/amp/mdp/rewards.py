@@ -43,3 +43,11 @@ def stand_still_joint_deviation_l1(
     command = env.command_manager.get_command(command_name)
     # Penalize motion when command is nearly zero.
     return mdp.joint_deviation_l1(env, asset_cfg) * (torch.norm(command[:, :2], dim=1) < command_threshold)
+
+
+def base_height_below_minimum(
+    env: ManagerBasedRLEnv, minimum_height: float, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Terminate when the robot base drops below a minimum world-frame height."""
+    asset: RigidObject = env.scene[asset_cfg.name]
+    return asset.data.root_pos_w[:, 2] < minimum_height

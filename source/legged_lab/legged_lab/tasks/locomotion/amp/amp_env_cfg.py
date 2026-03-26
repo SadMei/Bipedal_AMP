@@ -1,11 +1,8 @@
 import math
 from dataclasses import MISSING
-import torch
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg
-from isaaclab.envs import ManagerBasedRLEnvCfg
-from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
@@ -13,21 +10,17 @@ from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sensors import ContactSensorCfg, patterns
+from isaaclab.sensors import ContactSensorCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
-##
-# Pre-defined configs
-##
-from isaaclab.terrains.config.rough import ROUGH_TERRAINS_CFG  # isort: skip
-
 import legged_lab.tasks.locomotion.amp.mdp as mdp
 from legged_lab.envs import ManagerBasedAmpEnvCfg
 from legged_lab.managers import AnimationTermCfg as AnimTerm
 from legged_lab.managers import MotionDataTermCfg as MotionDataTerm
+
 
 @configclass
 class AmpSceneCfg(InteractiveSceneCfg):
@@ -80,9 +73,9 @@ class CommandsCfg:
 
     base_velocity = mdp.UniformVelocityCommandCfg(
         asset_name="robot",
-        resampling_time_range=(10.0, 10.0), # 每 10 秒重新采样一次指令
-        rel_standing_envs=0.02, # 2% 的时间让机器人站立不动
-        rel_heading_envs=1.0,   # 100% 的时间控制朝向
+        resampling_time_range=(10.0, 10.0),
+        rel_standing_envs=0.02,
+        rel_heading_envs=1.0,
         heading_command=True,
         heading_control_stiffness=0.5,
         debug_vis=True,
@@ -100,8 +93,7 @@ class ActionsCfg:
 
 
 @configclass
-class ObservationsCfg():
-        
+class ObservationsCfg:
     @configclass
     class PolicyCfg(ObsGroup):
         """Observations for policy group."""
@@ -117,43 +109,28 @@ class ObservationsCfg():
         # joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01))
         # joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-1.5, n_max=1.5))
         # actions = ObsTerm(func=mdp.last_action)
-        
-    # ---------------------------------------------------------------------------------------------
-    # 策略网络的观测 (Policy Observations) - 机器人"大脑"能看到的数据
-    # ---------------------------------------------------------------------------------------------
-    @configclass
-    class PolicyCfg(ObsGroup):
-        """Observations for policy group."""
 
-        # 1. 基座角速度 (Base Angular Velocity) - 对应 IMU 陀螺仪数据
-        # noise: 添加噪声模拟真实传感器的误差
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2))
-        
-        # 2. 根节点切向/法向向量 (Root Local Rotation Tangent/Normal) - 帮助机器人理解身体朝向
         root_local_rot_tan_norm = ObsTerm(func=mdp.root_local_rot_tan_norm, noise=Unoise(n_min=-0.05, n_max=0.05))
-        
-        # 3. 速度指令 (Velocity Commands) - 机器人接收到的目标速度命令 (例如: 前进 1m/s)
         velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
-        
-        # 4. 关节位置 (Joint Positions) - 电机编码器数据
-        # 注意: 这里的 joint_pos 通常是归一化后的或者相对于默认姿态的偏差
         joint_pos = ObsTerm(func=mdp.joint_pos, noise=Unoise(n_min=-0.01, n_max=0.01))
-        
-        # 5. 关节速度 (Joint Velocities) - 电机速度
         joint_vel = ObsTerm(func=mdp.joint_vel, noise=Unoise(n_min=-1.5, n_max=1.5))
-        
-        # 6. 上一次动作 (Last Action) - 网络上一步输出的动作，用于平滑控制
         actions = ObsTerm(func=mdp.last_action)
-        
-        # 7. 关键部位位置 (Key Body Positions) - AMP 算法特有，用于模仿学习
-        # 比如：脚相对于身体的位置。这能帮助机器人学在特定动作下脚该放哪里。
-        # [重要] 如果你的机器人没有手，记得去 g1_amp_env_cfg.py 里修改 KEY_BODY_NAMES
         key_body_pos_b = ObsTerm(
             func=mdp.key_body_pos_b,
-            params=MISSING, # 在子类 (如 g1_amp_env_cfg.py) 中具体指定
+            params=MISSING,
             noise=Unoise(n_min=-0.08, n_max=0.08),
         )
-    
+        # root_height = ObsTerm(func=mdp.base_pos_z)
+
+        def __post_init__(self):
+            self.history_length = 5
+            self.enable_corruption = True
+            self.concatenate_terms = True
+
+    # observation groups
+    policy: PolicyCfg = PolicyCfg()
+
     @configclass
     class CriticCfg(ObsGroup):
         """Observations for critic group. (has privilege observations)"""
@@ -175,9 +152,9 @@ class ObservationsCfg():
             self.history_length = 5
             self.enable_corruption = False
             self.concatenate_terms = True
-    
+
     critic: CriticCfg = CriticCfg()
-    
+
     @configclass
     class DiscriminatorCfg(ObsGroup):
         root_local_rot_tan_norm = ObsTerm(func=mdp.root_local_rot_tan_norm)
@@ -188,16 +165,16 @@ class ObservationsCfg():
             func=mdp.key_body_pos_b,
             params=MISSING,
         )
-        
+
         def __post_init__(self):
             self.enable_corruption = False
             self.concatenate_terms = True
             self.concatenate_dim = -1
             self.history_length = 10
             self.flatten_history_dim = False
-            
+
     disc: DiscriminatorCfg = DiscriminatorCfg()
-            
+
     @configclass
     class DiscriminatorDemoCfg(ObsGroup):
         ref_root_local_rot_tan_norm = ObsTerm(
@@ -205,104 +182,93 @@ class ObservationsCfg():
             params={
                 "animation": MISSING,
                 "flatten_steps_dim": False,
-            }
+            },
         )
         ref_root_ang_vel_b = ObsTerm(
             func=mdp.ref_root_ang_vel_b,
             params={
                 "animation": MISSING,
                 "flatten_steps_dim": False,
-            }
+            },
         )
         ref_joint_pos = ObsTerm(
             func=mdp.ref_joint_pos,
             params={
                 "animation": MISSING,
                 "flatten_steps_dim": False,
-            }
+            },
         )
         ref_joint_vel = ObsTerm(
             func=mdp.ref_joint_vel,
             params={
                 "animation": MISSING,
                 "flatten_steps_dim": False,
-            }
+            },
         )
         ref_key_body_pos_b = ObsTerm(
             func=mdp.ref_key_body_pos_b,
             params={
                 "animation": MISSING,
                 "flatten_steps_dim": False,
-            }
+            },
         )
-        
+
         def __post_init__(self):
             self.enable_corruption = False
             self.concatenate_terms = True
             self.concatenate_dim = -1
-    
+
     disc_demo: DiscriminatorDemoCfg = DiscriminatorDemoCfg()
-        
 
 
 @configclass
 class EventCfg:
     """Configuration for events."""
 
-    # ---------------------------------------------------------------------------------------------
-    # 物理属性随机化 (Domain Randomization) - 增强 Sim2Real 鲁棒性
-    # ---------------------------------------------------------------------------------------------
-    
-    # 1. 摩擦力随机化
+    # startup
     physics_material = EventTerm(
         func=mdp.randomize_rigid_body_material,
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
-            "static_friction_range": (0.3, 1.0),  # 静摩擦系数范围
-            "dynamic_friction_range": (0.3, 1.0), # 动摩擦系数范围
-            "restitution_range": (0.0, 0.0),      # 弹性系数 (0 = 不反弹)
+            "static_friction_range": (0.3, 1.0),
+            "dynamic_friction_range": (0.3, 1.0),
+            "restitution_range": (0.0, 0.0),
             "num_buckets": 64,
         },
     )
 
-    # 2. 质量随机化 (Mass Randomization)
     add_base_mass = EventTerm(
         func=mdp.randomize_rigid_body_mass,
         mode="startup",
         params={
-            "asset_cfg": SceneEntityCfg("robot", body_names=MISSING), # 在子类中指定部位
-            "mass_distribution_params": (-1.0, 3.0), # 质量变化范围 (kg)
+            "asset_cfg": SceneEntityCfg("robot", body_names=MISSING),
+            "mass_distribution_params": (-1.0, 3.0),
             "operation": "add",
         },
     )
 
     # reset
-    # 3. 外力干扰 (External Force Disturbance) - 提高抗干扰能力
     base_external_force_torque = EventTerm(
         func=mdp.apply_external_force_torque,
         mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=MISSING),
-            "force_range": (0.0, 0.0),   # 施加的力范围 (N)
-            "torque_range": (-0.0, 0.0), # 施加的力矩范围 (Nm)
+            "force_range": (0.0, 0.0),
+            "torque_range": (-0.0, 0.0),
         },
     )
 
-    reset_from_ref = EventTerm(
-        func=mdp.reset_from_ref, 
-        mode="reset",
-        params=MISSING
-    )
+    reset_from_ref = EventTerm(func=mdp.reset_from_ref, mode="reset", params=MISSING)
 
     # interval
-    # 4. 推机器人 (Push Robot) - 间隔性推一下
     push_robot = EventTerm(
         func=mdp.push_by_setting_velocity,
         mode="interval",
-        interval_range_s=(5.0, 5.0), # 每 5 秒推一次
-        params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}}, # 瞬间改变速度范围
+        interval_range_s=(5.0, 5.0),
+        params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}},
     )
+
 
 @configclass
 class RewardsCfg:
@@ -315,13 +281,12 @@ class RewardsCfg:
     track_ang_vel_z_exp = RewTerm(
         func=mdp.track_ang_vel_z_exp, weight=0.5, params={"command_name": "base_velocity", "std": math.sqrt(0.25)}
     )
-    # -- 惩罚项 (Penalties) - 负权重
-    # 如果机器人想通过奇怪的抖动来骗分，这些惩罚项会阻止它
-    lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.0) # 惩罚垂直方向的速度 (不想让它上下乱跳)
-    ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.05) # 惩罚非偏航角速度 (不想让它前后左右摇晃)
-    dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-1.0e-5) # 惩罚力矩 (节能)
-    dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7) # 惩罚关节加速度 (平滑动作)
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01) # 惩罚动作变化率 (避免高频抖动)
+    # -- penalties
+    lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.0)
+    ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.05)
+    dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-1.0e-5)
+    dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7)
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)
     feet_air_time = RewTerm(
         func=mdp.feet_air_time,
         weight=0.125,
@@ -351,11 +316,10 @@ class TerminationsCfg:
         params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=MISSING), "threshold": 1.0},
     )
     base_height = DoneTerm(func=mdp.root_height_below_minimum, params={"minimum_height": 0.2})
-    # 2. 姿态异常终止
     bad_orientation = DoneTerm(
-        func=mdp.bad_orientation, 
+        func=mdp.bad_orientation,
         params={
-            "limit_angle": math.radians(60.0), # 如果倾斜超过 60 度，判负并重置
+            "limit_angle": math.radians(60.0),
         },
     )
 
@@ -363,19 +327,24 @@ class TerminationsCfg:
 @configclass
 class CurriculumCfg:
     """Curriculum terms for the MDP."""
+
     pass
+
 
 @configclass
 class MotionDataCfg:
     """Motion data settings for the MDP."""
+
     motion_dataset = MotionDataTerm(
-        motion_data_dir="", 
+        motion_data_dir="",
         motion_data_weights={},
     )
-    
+
+
 @configclass
 class AnimationCfg:
     """Animation settings for the MDP."""
+
     animation = AnimTerm(
         motion_data_term="motion_dataset",
         motion_data_components=[
@@ -386,8 +355,8 @@ class AnimationCfg:
             "dof_pos",
             "dof_vel",
             "key_body_pos_b",
-        ], 
-        num_steps_to_use=10, 
+        ],
+        num_steps_to_use=10,
         random_initialize=True,
         random_fetch=True,
         enable_visualization=False,
@@ -433,4 +402,3 @@ class LocomotionAmpEnvCfg(ManagerBasedAmpEnvCfg):
         # we tick all the sensors based on the smallest update period (physics update period)
         if self.scene.contact_forces is not None:
             self.scene.contact_forces.update_period = self.sim.dt
-

@@ -14,10 +14,11 @@ from __future__ import annotations
 import torch
 from typing import TYPE_CHECKING
 
+from isaaclab.assets import Articulation, RigidObject
+from isaaclab.envs import mdp
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import ContactSensor
 from isaaclab.utils.math import quat_apply_inverse, yaw_quat
-from isaaclab.assets import Articulation, RigidObject
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -129,6 +130,7 @@ def track_ang_vel_z_world_exp(
     ang_vel_error = torch.square(env.command_manager.get_command(command_name)[:, 2] - asset.data.root_ang_vel_w[:, 2])
     return torch.exp(-ang_vel_error / std**2)
 
+
 def joint_energy(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     """Penalize the energy used by the robot's joints."""
     asset = env.scene[asset_cfg.name]
@@ -136,6 +138,7 @@ def joint_energy(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntity
     qvel = asset.data.joint_vel[:, asset_cfg.joint_ids]
     qfrc = asset.data.applied_torque[:, asset_cfg.joint_ids]
     return torch.sum(torch.abs(qvel) * torch.abs(qfrc), dim=-1)
+
 
 # def feet_clearance_reward(
 #     env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, base_height:float, target_feet_height: float, std: float, tanh_mult: float
@@ -147,7 +150,8 @@ def joint_energy(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntity
 #     reward = foot_z_target_error * foot_velocity_tanh
 #     return torch.exp(-torch.sum(reward, dim=1) / std)
 
-def foot_clearance_reward(
+
+def feet_clearance(
     env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, target_height: float, std: float, tanh_mult: float
 ) -> torch.Tensor:
     """Reward the swinging feet for clearing a specified height off the ground"""
@@ -156,6 +160,7 @@ def foot_clearance_reward(
     foot_velocity_tanh = torch.tanh(tanh_mult * torch.norm(asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :2], dim=2))
     reward = foot_z_target_error * foot_velocity_tanh
     return torch.exp(-torch.sum(reward, dim=1) / std)
+
 
 def feet_gait(
     env: ManagerBasedRLEnv,
@@ -184,3 +189,12 @@ def feet_gait(
         cmd_norm = torch.norm(env.command_manager.get_command(command_name), dim=1)
         reward *= cmd_norm > 0.1
     return reward
+
+
+def stand_still_joint_deviation_l1(
+    env, command_name: str, command_threshold: float = 0.06, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Penalize offsets from the default joint positions when the command is very small."""
+    command = env.command_manager.get_command(command_name)
+    # Penalize motion when command is nearly zero.
+    return mdp.joint_deviation_l1(env, asset_cfg) * (torch.norm(command[:, :2], dim=1) < command_threshold)
