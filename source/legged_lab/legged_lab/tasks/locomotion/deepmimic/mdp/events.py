@@ -35,4 +35,9 @@ def reset_from_ref(
 
     dof_pos = animation_term.get_dof_pos(env_ids)[:, 0, :]
     dof_vel = animation_term.get_dof_vel(env_ids)[:, 0, :]
-    robot.write_joint_state_to_sim(dof_pos, dof_vel, env_ids=env_ids)
+    robot.write_joint_state_to_sim(
+        dof_pos,
+        dof_vel,
+        joint_ids=asset_cfg.joint_ids,
+        env_ids=env_ids,
+    )

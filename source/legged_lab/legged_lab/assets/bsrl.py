@@ -7,6 +7,7 @@ from isaaclab.utils import configclass
 
 
 LEGGED_LAB_ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+BSRL_DEFAULT_ROOT_HEIGHT = 0.877114
 
 
 @configclass
@@ -37,7 +38,7 @@ BSRL_CFG = BSRLArticulationCfg(
         ),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-        pos=(0.0, 0.0, 0.72),
+        pos=(0.0, 0.0, BSRL_DEFAULT_ROOT_HEIGHT),
         joint_pos={
             "joint_.*_hip_yaw": 0.0,
             "joint_.*_hip_roll": 0.0,
@@ -49,12 +50,28 @@ BSRL_CFG = BSRLArticulationCfg(
         joint_vel={".*": 0.0},
     ),
     actuators={
-        "base_motors": ImplicitActuatorCfg(
-            joint_names_expr=[".*"],
-            effort_limit_sim=120.0,
-            velocity_limit_sim=12.0,
+        "hip_motors": ImplicitActuatorCfg(
+            joint_names_expr=["joint_.*_hip_.*"],
+            effort_limit_sim=1000.0,
+            velocity_limit_sim=10.0,
             stiffness=100.0,
-            damping=5.0,
+            damping=2.0,
+            armature=0.01,
+        ),
+        "knee_motors": ImplicitActuatorCfg(
+            joint_names_expr=["joint_.*_knee_pitch"],
+            effort_limit_sim=1000.0,
+            velocity_limit_sim=10.0,
+            stiffness=150.0,
+            damping=4.0,
+            armature=0.01,
+        ),
+        "ankle_motors": ImplicitActuatorCfg(
+            joint_names_expr=["joint_.*_ankle_.*"],
+            effort_limit_sim=1000.0,
+            velocity_limit_sim=10.0,
+            stiffness=40.0,
+            damping=2.0,
             armature=0.01,
         ),
     },

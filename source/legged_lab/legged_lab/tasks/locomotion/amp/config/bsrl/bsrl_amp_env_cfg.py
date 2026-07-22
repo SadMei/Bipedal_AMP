@@ -57,9 +57,10 @@ class BSRLAmpEnvCfg(LocomotionAmpEnvCfg):
         self.actions.joint_pos.scale = 0.25
         self.actions.joint_pos.clip = {".*": (-100.0, 100.0)}
         self.actions.joint_pos.joint_names = JOINT_NAMES
+        self.actions.joint_pos.preserve_order = True
 
         # 运动数据
-        # 这里使用由 G1 下肢动作裁剪得到的 BSRL 12DoF 过渡数据。
+        # Use motions retargeted directly to BSRL's 12 joints.
         self.motion_data.motion_dataset.motion_data_dir = os.path.join(
             LEGGED_LAB_ROOT_DIR, "data", "MotionData", "bsrl_12dof", "amp", "walk_and_run"
         )
@@ -79,15 +80,15 @@ class BSRLAmpEnvCfg(LocomotionAmpEnvCfg):
             "link_left_ankle_roll",
         ]
         self.observations.policy.key_body_pos_b.params = {
-            "asset_cfg": SceneEntityCfg("robot", body_names=KEY_BODY_NAMES)
+            "asset_cfg": SceneEntityCfg("robot", body_names=KEY_BODY_NAMES, preserve_order=True)
         }
         self.observations.critic.key_body_pos_b.params = {
-            "asset_cfg": SceneEntityCfg("robot", body_names=KEY_BODY_NAMES)
+            "asset_cfg": SceneEntityCfg("robot", body_names=KEY_BODY_NAMES, preserve_order=True)
         }
         self.observations.disc.key_body_pos_b.params = {
-            "asset_cfg": SceneEntityCfg("robot", body_names=KEY_BODY_NAMES)
+            "asset_cfg": SceneEntityCfg("robot", body_names=KEY_BODY_NAMES, preserve_order=True)
         }
-        joint_obs_asset_cfg = SceneEntityCfg("robot", joint_names=JOINT_NAMES)
+        joint_obs_asset_cfg = SceneEntityCfg("robot", joint_names=JOINT_NAMES, preserve_order=True)
         self.observations.policy.joint_pos.params = {"asset_cfg": joint_obs_asset_cfg}
         self.observations.policy.joint_vel.params = {"asset_cfg": joint_obs_asset_cfg}
         self.observations.critic.joint_pos.params = {"asset_cfg": joint_obs_asset_cfg}
@@ -210,8 +211,11 @@ class BSRLAmpEnvCfg(LocomotionAmpEnvCfg):
                 "make_consistent": True,
             },
         )
-        # Smoke-test mode: don't reset the BSRL robot from 29-DoF G1 reference motions.
-        self.events.reset_from_ref = None
+        self.events.reset_from_ref.params = {
+            "animation": ANIMATION_TERM_NAME,
+            "asset_cfg": SceneEntityCfg("robot", joint_names=JOINT_NAMES, preserve_order=True),
+            "height_offset": 0.0,
+        }
 
         # 终止条件: mirror the PPO BSRL setup.
         self.terminations.base_height.func = amp_mdp.base_height_below_minimum
