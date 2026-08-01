@@ -8,6 +8,7 @@
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import os
 import sys
 
 from isaaclab.app import AppLauncher
@@ -19,6 +20,18 @@ import cli_args  # isort: skip
 parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
 parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
+parser.add_argument(
+    "--video_folder",
+    type=str,
+    default=os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "videos")),
+    help="Directory used for playback recordings.",
+)
+parser.add_argument(
+    "--video_name",
+    type=str,
+    default=None,
+    help="Optional filename prefix for the playback recording.",
+)
 parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
@@ -34,6 +47,18 @@ parser.add_argument(
     help="Use the pre-trained checkpoint from Nucleus.",
 )
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
+parser.add_argument(
+    "--debug_state",
+    action="store_true",
+    default=False,
+    help="Print compact robot state and action diagnostics during playback.",
+)
+parser.add_argument(
+    "--debug_interval",
+    type=int,
+    default=25,
+    help="Playback steps between state diagnostic lines.",
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -54,9 +79,9 @@ simulation_app = app_launcher.app
 """Rest everything follows."""
 
 import gymnasium as gym
-import os
 import time
 import torch
+import isaaclab.utils.math as math_utils
 
 from rsl_rl.runners import DistillationRunner, OnPolicyRunner
 
@@ -125,10 +150,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # wrap for video recording
     if args_cli.video:
+        video_name = args_cli.video_name or (
+            f"{train_task_name}_{os.path.splitext(os.path.basename(resume_path))[0]}_{time.strftime('%Y%m%d_%H%M%S')}"
+        )
         video_kwargs = {
-            "video_folder": os.path.join(log_dir, "videos", "play"),
+            "video_folder": os.path.abspath(os.path.expanduser(args_cli.video_folder)),
             "step_trigger": lambda step: step == 0,
             "video_length": args_cli.video_length,
+            "name_prefix": video_name,
             "disable_logger": True,
         }
         print("[INFO] Recording videos during training.")
@@ -182,6 +211,43 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # reset environment
     obs = env.get_observations()
     timestep = 0
+    sim_env = env.unwrapped
+    if args_cli.debug_state:
+        robot = sim_env.scene["robot"]
+        action_term = sim_env.action_manager.get_term("joint_pos")
+        command_term = sim_env.command_manager.get_term("base_velocity")
+        animation_term = sim_env.animation_manager.get_term("animation")
+        debug_body_ids, _ = robot.find_bodies(
+            ["link_right_ankle_roll", "link_left_ankle_roll"], preserve_order=True
+        )
+
+        def _debug_state(label: str, dones=None):
+            root_pos = robot.data.root_pos_w[0].detach().cpu().tolist()
+            root_quat = robot.data.root_quat_w[0].detach().cpu().tolist()
+            joint_pos = robot.data.joint_pos[0].detach().cpu().tolist()
+            joint_vel = robot.data.joint_vel[0].detach().cpu().tolist()
+            body_pos_w = robot.data.body_pos_w[0, debug_body_ids, :]
+            actual_key_body_pos_b = math_utils.quat_apply_inverse(
+                robot.data.root_quat_w[0].unsqueeze(0).expand(body_pos_w.shape[0], -1),
+                body_pos_w - robot.data.root_pos_w[0].unsqueeze(0),
+            )
+            reference_key_body_pos_b = animation_term.key_body_pos_b_buffer[0, 0]
+            raw_action = action_term.raw_actions[0].detach().cpu().tolist()
+            processed_action = action_term.processed_actions[0].detach().cpu().tolist()
+            command = command_term.command[0].detach().cpu().tolist()
+            done = None if dones is None else bool(dones[0].item())
+            print(
+                f"[DEBUG] {label} root_pos={[round(v, 4) for v in root_pos]} "
+                f"root_quat={[round(v, 4) for v in root_quat]} "
+                f"base_h={root_pos[2]:.4f} command={[round(v, 4) for v in command]} "
+                f"raw_action={[round(v, 4) for v in raw_action]} "
+                f"target={[round(v, 4) for v in processed_action]} "
+                f"joint_pos={[round(v, 4) for v in joint_pos]} "
+                f"joint_vel={[round(v, 4) for v in joint_vel]} done={done}"
+                f" key_err={float(torch.linalg.vector_norm(actual_key_body_pos_b - reference_key_body_pos_b)):.4f}"
+            )
+
+        _debug_state("initial")
     # simulate environment
     while simulation_app.is_running():
         start_time = time.time()
@@ -193,8 +259,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             obs, _, dones, _ = env.step(actions)
             # reset recurrent states for episodes that have terminated
             policy_nn.reset(dones)
+        timestep += 1
+        if args_cli.debug_state and (
+            timestep % max(args_cli.debug_interval, 1) == 0 or bool(dones[0].item())
+        ):
+            _debug_state(f"step={timestep}", dones)
         if args_cli.video:
-            timestep += 1
             # Exit the play loop after recording one video
             if timestep == args_cli.video_length:
                 break

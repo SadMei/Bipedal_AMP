@@ -5,47 +5,61 @@ from pathlib import Path
 import joblib
 import numpy as np
 
+from bsrl_conventions import (
+    BSRL_AMP_JOINT_NAMES,
+    BSRL_AMP_KEY_BODY_NAMES,
+    BSRL_GROUNDING_CONVENTION,
+    BSRL_JOINT_COORDINATE_CONVENTION,
+    validate_bsrl_joint_positions,
+)
 
-AMP_JOINT_NAMES = [
-    "joint_left_hip_yaw",
-    "joint_right_hip_yaw",
-    "joint_left_hip_roll",
-    "joint_right_hip_roll",
-    "joint_left_hip_pitch",
-    "joint_right_hip_pitch",
-    "joint_left_knee_pitch",
-    "joint_right_knee_pitch",
-    "joint_left_ankle_pitch",
-    "joint_right_ankle_pitch",
-    "joint_left_ankle_roll",
-    "joint_right_ankle_roll",
-]
 
-AMP_KEY_BODY_NAMES = [
-    "link_right_ankle_roll",
-    "link_left_ankle_roll",
-]
+class GmrNumpyUnpickler(pickle.Unpickler):
+    """Load current GMR NumPy 2 pickles in the IsaacLab environment."""
+
+    def find_class(self, module, name):
+        if module.startswith("numpy._core"):
+            module = "numpy.core" + module[len("numpy._core") :]
+        return super().find_class(module, name)
 
 
 def convert_motion(source_path, output_path, loop_mode):
     with open(source_path, "rb") as source_file:
-        source = pickle.load(source_file)
+        source = GmrNumpyUnpickler(source_file).load()
 
     source_joint_names = source["dof_names"]
     source_key_body_names = source["key_body_names"]
-    joint_indices = [source_joint_names.index(name) for name in AMP_JOINT_NAMES]
-    key_body_indices = [source_key_body_names.index(name) for name in AMP_KEY_BODY_NAMES]
+    joint_indices = [source_joint_names.index(name) for name in BSRL_AMP_JOINT_NAMES]
+    key_body_indices = [source_key_body_names.index(name) for name in BSRL_AMP_KEY_BODY_NAMES]
+
+    source_convention = source.get("joint_coordinate_convention")
+    if source_convention != BSRL_JOINT_COORDINATE_CONVENTION:
+        raise ValueError(
+            f"{source_path}: unsupported joint coordinate convention {source_convention!r}; "
+            f"expected {BSRL_JOINT_COORDINATE_CONVENTION!r}"
+        )
+    source_grounding = source.get("grounding_convention")
+    if source_grounding != BSRL_GROUNDING_CONVENTION:
+        raise ValueError(
+            f"{source_path}: unsupported grounding convention {source_grounding!r}; "
+            f"expected {BSRL_GROUNDING_CONVENTION!r}"
+        )
+
+    dof_pos = np.asarray(source["dof_pos"][:, joint_indices], dtype=np.float32).copy()
+    validate_bsrl_joint_positions(dof_pos, BSRL_AMP_JOINT_NAMES, str(source_path))
 
     root_rot_xyzw = np.asarray(source["root_rot"], dtype=np.float32)
     output = {
         "fps": float(source["fps"]),
         "root_pos": np.asarray(source["root_pos"], dtype=np.float32),
         "root_rot": root_rot_xyzw[:, [3, 0, 1, 2]],
-        "dof_pos": np.asarray(source["dof_pos"][:, joint_indices], dtype=np.float32),
+        "dof_pos": dof_pos,
         "loop_mode": int(loop_mode),
         "key_body_pos": np.asarray(source["key_body_pos"][:, key_body_indices], dtype=np.float32),
-        "joint_names": AMP_JOINT_NAMES,
-        "key_body_names": AMP_KEY_BODY_NAMES,
+        "joint_names": list(BSRL_AMP_JOINT_NAMES),
+        "key_body_names": list(BSRL_AMP_KEY_BODY_NAMES),
+        "joint_coordinate_convention": BSRL_JOINT_COORDINATE_CONVENTION,
+        "grounding_convention": BSRL_GROUNDING_CONVENTION,
         "source_motion": source.get("source_motion", source_path.name),
     }
 

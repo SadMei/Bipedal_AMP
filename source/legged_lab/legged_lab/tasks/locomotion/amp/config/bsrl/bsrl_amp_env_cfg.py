@@ -1,117 +1,447 @@
 import math
 import os
+from dataclasses import MISSING
 
+import joblib
 import isaaclab.envs.mdp as il_mdp
+import numpy as np
 from legged_lab.tasks.locomotion.amp.amp_env_cfg import LocomotionAmpEnvCfg
 
 from isaaclab.utils import configclass
 from isaaclab.managers import EventTermCfg as EventTerm
+from isaaclab.managers import ObservationGroupCfg as ObsGroup
+from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
+from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
-from legged_lab.assets.bsrl import BSRL_CFG # 引入你的机器人本体配置
+from legged_lab.assets.bsrl import BSRL_ACTION_SCALE, BSRL_CFG # 引入你的机器人本体配置
+from legged_lab.assets.bsrl_conventions import (
+    BSRL_AMP_JOINT_NAMES,
+    BSRL_AMP_KEY_BODY_NAMES,
+    BSRL_GROUNDING_CONVENTION,
+    BSRL_JOINT_COORDINATE_CONVENTION,
+    validate_bsrl_joint_positions,
+)
 import legged_lab.tasks.locomotion.amp.mdp as amp_mdp
 
 LEGGED_LAB_ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", ".."))
 
+# AMP 动作序列名称及判别器使用的连续帧数。
 ANIMATION_TERM_NAME = "animation"
 AMP_NUM_STEPS = 4
+
+# BSRL 模型中的关键刚体、足部和关节名称。
 BASE_LINK_NAME = "base_link"
 FOOT_NAMES = [
     "link_left_ankle_roll",
     "link_right_ankle_roll",
 ]
+KEY_BODY_NAMES = list(BSRL_AMP_KEY_BODY_NAMES)
 FOOT_REGEX = "link_.*_ankle_roll"
-JOINT_NAMES = [
-    "joint_left_hip_yaw",
-    "joint_right_hip_yaw",
-    "joint_left_hip_roll",
-    "joint_right_hip_roll",
-    "joint_left_hip_pitch",
-    "joint_right_hip_pitch",
-    "joint_left_knee_pitch",
-    "joint_right_knee_pitch",
-    "joint_left_ankle_pitch",
-    "joint_right_ankle_pitch",
-    "joint_left_ankle_roll",
-    "joint_right_ankle_roll",
-]
+JOINT_NAMES = list(BSRL_AMP_JOINT_NAMES)
+
+
+def _validate_motion_files(motion_dir: str, motion_files: list[str]) -> None:
+    for file_name in motion_files:
+        path = os.path.join(motion_dir, file_name)
+        motion = joblib.load(path)
+        convention = motion.get("joint_coordinate_convention")
+        if convention != BSRL_JOINT_COORDINATE_CONVENTION:
+            raise ValueError(
+                f"{path}: expected joint coordinate convention "
+                f"{BSRL_JOINT_COORDINATE_CONVENTION!r}, got {convention!r}"
+            )
+        grounding = motion.get("grounding_convention")
+        if grounding != BSRL_GROUNDING_CONVENTION:
+            raise ValueError(
+                f"{path}: expected grounding convention {BSRL_GROUNDING_CONVENTION!r}, got {grounding!r}"
+            )
+        if tuple(motion.get("joint_names", ())) != BSRL_AMP_JOINT_NAMES:
+            raise ValueError(f"{path}: AMP joint order does not match BSRL_AMP_JOINT_NAMES")
+        if tuple(motion.get("key_body_names", ())) != BSRL_AMP_KEY_BODY_NAMES:
+            raise ValueError(f"{path}: AMP key-body order does not match BSRL_AMP_KEY_BODY_NAMES")
+
+        frame_count = len(motion["root_pos"])
+        expected_shapes = {
+            "root_pos": (frame_count, 3),
+            "root_rot": (frame_count, 4),
+            "dof_pos": (frame_count, len(BSRL_AMP_JOINT_NAMES)),
+            "key_body_pos": (frame_count, len(BSRL_AMP_KEY_BODY_NAMES), 3),
+        }
+        for key, expected_shape in expected_shapes.items():
+            values = np.asarray(motion[key])
+            if values.shape != expected_shape:
+                raise ValueError(f"{path}: expected {key} shape {expected_shape}, got {values.shape}")
+            if not np.isfinite(values).all():
+                raise ValueError(f"{path}: {key} contains non-finite values")
+
+        quat_norm = np.linalg.norm(np.asarray(motion["root_rot"]), axis=1)
+        if not np.allclose(quat_norm, 1.0, atol=1.0e-3):
+            raise ValueError(f"{path}: root_rot contains non-unit quaternions")
+        validate_bsrl_joint_positions(motion["dof_pos"], motion["joint_names"], path)
+
+# 周期推扰时叠加到根节点的速度范围：x/y/z 为线速度，roll/pitch/yaw 为角速度。
+VELOCITY_RANGE = {
+    "x": (-0.5, 0.5),
+    "y": (-0.5, 0.5),
+    "z": (-0.2, 0.2),
+    "roll": (-0.5, 0.5),
+    "pitch": (-0.5, 0.5),
+    "yaw": (-0.5, 0.5),
+}
+
+
+@configclass
+class BSRLObservationsCfg:
+    """BSRL AMP 的观测组配置。"""
+
+    @configclass
+    class PolicyCfg(ObsGroup):
+        """策略网络观测：仅包含部署时需要提供给 actor 的信息。"""
+
+        # 基座角速度，并加入 IMU 测量噪声。
+        base_ang_vel = ObsTerm(func=amp_mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2))
+        # 基座局部旋转的 6D 切向归一化表示。
+        root_local_rot_tan_norm = ObsTerm(
+            func=amp_mdp.root_local_rot_tan_norm,
+            noise=Unoise(n_min=-0.05, n_max=0.05),
+        )
+        # 当前期望的前后、横向和偏航速度指令。
+        velocity_commands = ObsTerm(
+            func=amp_mdp.generated_commands,
+            params={"command_name": "base_velocity"},
+        )
+        # 12 个关节的位置和速度，顺序严格采用 JOINT_NAMES。
+        joint_pos = ObsTerm(
+            func=amp_mdp.joint_pos,
+            params={"asset_cfg": SceneEntityCfg("robot", joint_names=JOINT_NAMES, preserve_order=True)},
+            noise=Unoise(n_min=-0.01, n_max=0.01),
+        )
+        joint_vel = ObsTerm(
+            func=amp_mdp.joint_vel,
+            params={"asset_cfg": SceneEntityCfg("robot", joint_names=JOINT_NAMES, preserve_order=True)},
+            noise=Unoise(n_min=-1.5, n_max=1.5),
+        )
+        # 上一个控制周期输出的动作。
+        actions = ObsTerm(func=amp_mdp.last_action)
+        # 左右脚相对基座的位置，用于描述下肢姿态。
+        key_body_pos_b = ObsTerm(
+            func=amp_mdp.key_body_pos_b,
+            params={
+                "asset_cfg": SceneEntityCfg("robot", body_names=KEY_BODY_NAMES, preserve_order=True),
+            },
+            noise=Unoise(n_min=-0.08, n_max=0.08),
+        )
+
+        def __post_init__(self):
+            # 保存最近 5 个控制周期，并对策略观测启用噪声。
+            self.history_length = 5
+            self.enable_corruption = True
+            self.concatenate_terms = True
+
+    policy: PolicyCfg = PolicyCfg()
+
+    @configclass
+    class CriticCfg(ObsGroup):
+        """价值网络观测：可包含仿真中可得的特权信息，不输入 actor。"""
+
+        # critic 比 policy 多使用无噪声的基座线速度。
+        base_lin_vel = ObsTerm(func=amp_mdp.base_lin_vel)
+        base_ang_vel = ObsTerm(func=amp_mdp.base_ang_vel)
+        root_local_rot_tan_norm = ObsTerm(func=amp_mdp.root_local_rot_tan_norm)
+        velocity_commands = ObsTerm(
+            func=amp_mdp.generated_commands,
+            params={"command_name": "base_velocity"},
+        )
+        joint_pos = ObsTerm(
+            func=amp_mdp.joint_pos,
+            params={"asset_cfg": SceneEntityCfg("robot", joint_names=JOINT_NAMES, preserve_order=True)},
+        )
+        joint_vel = ObsTerm(
+            func=amp_mdp.joint_vel,
+            params={"asset_cfg": SceneEntityCfg("robot", joint_names=JOINT_NAMES, preserve_order=True)},
+        )
+        actions = ObsTerm(func=amp_mdp.last_action)
+        key_body_pos_b = ObsTerm(
+            func=amp_mdp.key_body_pos_b,
+            params={
+                "asset_cfg": SceneEntityCfg("robot", body_names=KEY_BODY_NAMES, preserve_order=True),
+            },
+        )
+
+        def __post_init__(self):
+            # critic 同样使用 5 帧历史，但不添加观测噪声。
+            self.history_length = 5
+            self.enable_corruption = False
+            self.concatenate_terms = True
+
+    critic: CriticCfg = CriticCfg()
+
+    @configclass
+    class DiscriminatorCfg(ObsGroup):
+        """AMP 判别器使用的当前机器人状态序列。"""
+
+        root_local_rot_tan_norm = ObsTerm(func=amp_mdp.root_local_rot_tan_norm)
+        base_ang_vel = ObsTerm(func=amp_mdp.base_ang_vel)
+        joint_pos = ObsTerm(
+            func=amp_mdp.joint_pos,
+            params={"asset_cfg": SceneEntityCfg("robot", joint_names=JOINT_NAMES, preserve_order=True)},
+        )
+        joint_vel = ObsTerm(
+            func=amp_mdp.joint_vel,
+            params={"asset_cfg": SceneEntityCfg("robot", joint_names=JOINT_NAMES, preserve_order=True)},
+        )
+        key_body_pos_b = ObsTerm(
+            func=amp_mdp.key_body_pos_b,
+            params={
+                "asset_cfg": SceneEntityCfg("robot", body_names=KEY_BODY_NAMES, preserve_order=True),
+            },
+        )
+
+        def __post_init__(self):
+            # 保留 4 帧时间维，不展平，最终单帧维度为 39。
+            self.enable_corruption = False
+            self.concatenate_terms = True
+            self.concatenate_dim = -1
+            self.history_length = AMP_NUM_STEPS
+            self.flatten_history_dim = False
+
+    disc: DiscriminatorCfg = DiscriminatorCfg()
+
+    @configclass
+    class DiscriminatorDemoCfg(ObsGroup):
+        """AMP 判别器使用的参考动作状态序列。"""
+
+        ref_root_local_rot_tan_norm = ObsTerm(
+            func=amp_mdp.ref_root_local_rot_tan_norm,
+            params={"animation": ANIMATION_TERM_NAME, "flatten_steps_dim": False},
+        )
+        ref_root_ang_vel_b = ObsTerm(
+            func=amp_mdp.ref_root_ang_vel_b,
+            params={"animation": ANIMATION_TERM_NAME, "flatten_steps_dim": False},
+        )
+        ref_joint_pos = ObsTerm(
+            func=amp_mdp.ref_joint_pos,
+            params={"animation": ANIMATION_TERM_NAME, "flatten_steps_dim": False},
+        )
+        ref_joint_vel = ObsTerm(
+            func=amp_mdp.ref_joint_vel,
+            params={"animation": ANIMATION_TERM_NAME, "flatten_steps_dim": False},
+        )
+        ref_key_body_pos_b = ObsTerm(
+            func=amp_mdp.ref_key_body_pos_b,
+            params={"animation": ANIMATION_TERM_NAME, "flatten_steps_dim": False},
+        )
+
+        def __post_init__(self):
+            self.enable_corruption = False
+            self.concatenate_terms = True
+            self.concatenate_dim = -1
+
+    disc_demo: DiscriminatorDemoCfg = DiscriminatorDemoCfg()
+
+
+@configclass
+class BSRLEventCfg:
+    """第一版成功训练使用的事件配置。"""
+
+    # 第一版：启动时仅随机化非足部刚体材料，足底材料由下面的独立事件固定。
+    physics_material = EventTerm(
+        func=amp_mdp.randomize_rigid_body_material,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=[f"^(?!.*{FOOT_REGEX}).*"]),
+            "static_friction_range": (0.3, 1.0),
+            "dynamic_friction_range": (0.3, 1.0),
+            "restitution_range": (0.0, 0.0),
+            "num_buckets": 64,
+        },
+    )
+
+    # 第一版：仅对 base_link 质量增加 -1~3 kg，不改动腿部质量与惯量。
+    add_base_mass = EventTerm(
+        func=amp_mdp.randomize_rigid_body_mass,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=[BASE_LINK_NAME]),
+            "mass_distribution_params": (-1.0, 3.0),
+            "operation": "add",
+        },
+    )
+
+    # 第一版：不持续施加外力或外力矩。
+    base_external_force_torque = EventTerm(
+        func=amp_mdp.apply_external_force_torque,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=[BASE_LINK_NAME]),
+            "force_range": (0.0, 0.0),
+            "torque_range": (0.0, 0.0),
+        },
+    )
+
+    # AMP 训练仍从参考动作中的随机时刻初始化机器人状态。
+    reset_from_ref = EventTerm(func=amp_mdp.reset_from_ref, mode="reset", params=MISSING)
+
+    # 仅由播放配置启用；训练使用上面的参考动作复位。
+    reset_to_default = None
+
+    # 第一版：每 5 秒只叠加 x/y 方向根速度，不扰动高度与角速度。
+    push_robot = EventTerm(
+        func=amp_mdp.push_by_setting_velocity,
+        mode="interval",
+        interval_range_s=(5.0, 5.0),
+        params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}},
+    )
+
+    # 第一版：足底使用固定的高摩擦、零恢复系数材料。
+    randomize_foot_rigid_body_material = EventTerm(
+        func=amp_mdp.randomize_rigid_body_material,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=FOOT_NAMES, preserve_order=True),
+            "static_friction_range": (1.2, 1.2),
+            "dynamic_friction_range": (1.0, 1.0),
+            "restitution_range": (0.0, 0.0),
+            "num_buckets": 1,
+            "make_consistent": True,
+        },
+    )
+
+    # -------------------------------------------------------------------------
+    # 第二版事件保留区：本轮验证中全部停用，不删除，后续按消融实验逐项恢复。
+    # -------------------------------------------------------------------------
+    # physics_material = EventTerm(
+    #     func=amp_mdp.randomize_rigid_body_material,
+    #     mode="reset",
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
+    #         "static_friction_range": (0.5, 1.5),
+    #         "dynamic_friction_range": (0.5, 1.5),
+    #         "restitution_range": (0.0, 0.2),
+    #         "num_buckets": 64,
+    #     },
+    # )
+    # add_joint_default_pos = EventTerm(
+    #     func=amp_mdp.randomize_joint_default_pos,
+    #     mode="startup",
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("robot", joint_names=[".*"]),
+    #         "pos_distribution_params": (-0.05, 0.05),
+    #         "operation": "add",
+    #     },
+    # )
+    # base_com = EventTerm(
+    #     func=amp_mdp.randomize_rigid_body_com,
+    #     mode="startup",
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("robot", body_names=BASE_LINK_NAME),
+    #         "com_range": {"x": (-0.025, 0.025), "y": (-0.05, 0.05), "z": (-0.05, 0.05)},
+    #     },
+    # )
+    # actuator_gains = EventTerm(
+    #     func=amp_mdp.randomize_actuator_gains,
+    #     mode="startup",
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("robot", joint_names=[".*"]),
+    #         "stiffness_distribution_params": (0.8, 1.2),
+    #         "damping_distribution_params": (0.8, 1.2),
+    #         "operation": "scale",
+    #         "distribution": "uniform",
+    #     },
+    # )
+    # body_mass = EventTerm(
+    #     func=amp_mdp.randomize_rigid_body_mass,
+    #     mode="startup",
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
+    #         "mass_distribution_params": (0.8, 1.2),
+    #         "operation": "scale",
+    #         "distribution": "uniform",
+    #         "recompute_inertia": True,
+    #     },
+    # )
+    # joint_params = EventTerm(
+    #     func=amp_mdp.randomize_joint_parameters,
+    #     mode="startup",
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("robot", joint_names=[".*"]),
+    #         "armature_distribution_params": (0.8, 1.2),
+    #         "operation": "scale",
+    #         "distribution": "uniform",
+    #     },
+    # )
+    # joint_friction = EventTerm(
+    #     func=amp_mdp.randomize_joint_parameters,
+    #     mode="startup",
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("robot", joint_names=[".*"]),
+    #         "friction_distribution_params": (0.0, 0.05),
+    #         "operation": "abs",
+    #         "distribution": "uniform",
+    #     },
+    # )
+    # base_external_force_torque = EventTerm(
+    #     func=amp_mdp.apply_external_force_torque,
+    #     mode="reset",
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("robot", body_names=BASE_LINK_NAME),
+    #         "force_range": (-15.0, 15.0),
+    #         "torque_range": (-4.0, 4.0),
+    #     },
+    # )
+    # push_robot = EventTerm(
+    #     func=amp_mdp.push_by_setting_velocity,
+    #     mode="interval",
+    #     interval_range_s=(2.5, 5.0),
+    #     params={"velocity_range": VELOCITY_RANGE},
+    # )
+
 
 @configclass
 class BSRLAmpEnvCfg(LocomotionAmpEnvCfg):
+    """BSRL 的 AMP 训练环境配置。"""
+
+    observations: BSRLObservationsCfg = BSRLObservationsCfg()
+    events: BSRLEventCfg = BSRLEventCfg()
+
     def __post_init__(self):
         super().__post_init__()
 
         # 将场景中的机器人替换为你的 BSRL 配置
         self.scene.robot = BSRL_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
 
-        # --- 以下是基础的配置调整，你需要根据你的机器人进行修改 ---
-
-        # 1. 调整控制步长 (默认可能是控制 50Hz, 仿真 200Hz)
+        # 控制频率为 50 Hz：200 Hz 物理仿真每 4 步执行一次策略。
         self.decimation = 4
 
-        # 2. 初始状态 (你可以在资产里配，也可以在这里覆盖)
-        # self.scene.robot.init_state.pos = (0.0, 0.0, 0.8)
-
-        # 3. 动作控制
-        self.actions.joint_pos.scale = 0.25
+        # 关节位置动作使用资产中定义的逐关节 scale，并保持 SDK 关节顺序。
+        self.actions.joint_pos.scale = BSRL_ACTION_SCALE
         self.actions.joint_pos.clip = {".*": (-100.0, 100.0)}
         self.actions.joint_pos.joint_names = JOINT_NAMES
         self.actions.joint_pos.preserve_order = True
 
-        # 运动数据
-        # Use motions retargeted directly to BSRL's 12 joints.
+        # 加载已经重定向到 BSRL 12 个关节的走路和跑步 AMP 数据。
         self.motion_data.motion_dataset.motion_data_dir = os.path.join(
             LEGGED_LAB_ROOT_DIR, "data", "MotionData", "bsrl_12dof", "amp", "walk_and_run"
         )
         motion_files = sorted(
             file_name for file_name in os.listdir(self.motion_data.motion_dataset.motion_data_dir) if file_name.endswith(".pkl")
         )
+        _validate_motion_files(self.motion_data.motion_dataset.motion_data_dir, motion_files)
         self.motion_data.motion_dataset.motion_data_weights = {
             os.path.splitext(file_name)[0]: 1.0 for file_name in motion_files
         }
         self.animation.animation.num_steps_to_use = AMP_NUM_STEPS
-
-        # 4. 观测空间 (AMP 核心)
-        # 你的机器人只有下肢，所以关键部位(Key Body)只有脚踝（或脚底）。
-        # 这些名字必须和你的 URDF/USD 里的 link 名字完全匹配！
-        KEY_BODY_NAMES = [
-            "link_right_ankle_roll",
-            "link_left_ankle_roll",
-        ]
-        self.observations.policy.key_body_pos_b.params = {
-            "asset_cfg": SceneEntityCfg("robot", body_names=KEY_BODY_NAMES, preserve_order=True)
-        }
-        self.observations.critic.key_body_pos_b.params = {
-            "asset_cfg": SceneEntityCfg("robot", body_names=KEY_BODY_NAMES, preserve_order=True)
-        }
-        self.observations.disc.key_body_pos_b.params = {
-            "asset_cfg": SceneEntityCfg("robot", body_names=KEY_BODY_NAMES, preserve_order=True)
-        }
-        joint_obs_asset_cfg = SceneEntityCfg("robot", joint_names=JOINT_NAMES, preserve_order=True)
-        self.observations.policy.joint_pos.params = {"asset_cfg": joint_obs_asset_cfg}
-        self.observations.policy.joint_vel.params = {"asset_cfg": joint_obs_asset_cfg}
-        self.observations.critic.joint_pos.params = {"asset_cfg": joint_obs_asset_cfg}
-        self.observations.critic.joint_vel.params = {"asset_cfg": joint_obs_asset_cfg}
-        self.observations.disc.joint_pos.params = {"asset_cfg": joint_obs_asset_cfg}
-        self.observations.disc.joint_vel.params = {"asset_cfg": joint_obs_asset_cfg}
-        self.observations.disc.history_length = AMP_NUM_STEPS
-        self.observations.disc_demo.ref_root_local_rot_tan_norm.params["animation"] = ANIMATION_TERM_NAME
-        self.observations.disc_demo.ref_root_ang_vel_b.params["animation"] = ANIMATION_TERM_NAME
-        self.observations.disc_demo.ref_joint_pos.params["animation"] = ANIMATION_TERM_NAME
-        self.observations.disc_demo.ref_joint_vel.params["animation"] = ANIMATION_TERM_NAME
-        self.observations.disc_demo.ref_key_body_pos_b.params["animation"] = ANIMATION_TERM_NAME
         self.animation.animation.motion_data_components[6] = "key_body_pos_b"
 
-
-        # Commands: match the working PPO setup.
+        # 训练速度指令范围；与上面的推扰 VELOCITY_RANGE 无关。
         self.commands.base_velocity.ranges.lin_vel_x = (-1.0, 1.0)
         self.commands.base_velocity.ranges.lin_vel_y = (-1.0, 1.0)
         self.commands.base_velocity.ranges.ang_vel_z = (-0.4, 0.4)
         self.commands.base_velocity.rel_standing_envs = 0.02
 
-        # Rewards: borrow the task-side shaping from the working PPO setup,
-        # but keep AMP-specific style learning untouched.
+        # 任务奖励：保持现有 PPO 任务奖励和 AMP 风格奖励组合不变。
         self.rewards.track_lin_vel_xy_exp.weight = 3.0
         self.rewards.track_lin_vel_xy_exp.func = amp_mdp.track_lin_vel_xy_yaw_frame_exp
         self.rewards.track_lin_vel_xy_exp.params = {
@@ -195,40 +525,60 @@ class BSRLAmpEnvCfg(LocomotionAmpEnvCfg):
             },
         )
 
-        # Events
-        self.events.physics_material.params["asset_cfg"].body_names = [f"^(?!.*{FOOT_REGEX}).*"]
-        self.events.add_base_mass.params["asset_cfg"].body_names = [BASE_LINK_NAME]
-        self.events.base_external_force_torque.params["asset_cfg"].body_names = [BASE_LINK_NAME]
-        self.events.randomize_foot_rigid_body_material = EventTerm(
-            func=amp_mdp.randomize_rigid_body_material,
-            mode="startup",
-            params={
-                "asset_cfg": SceneEntityCfg("robot", body_names=FOOT_NAMES, preserve_order=True),
-                "static_friction_range": (1.2, 1.2),
-                "dynamic_friction_range": (1.0, 1.0),
-                "restitution_range": (0.0, 0.0),
-                "num_buckets": 1,
-                "make_consistent": True,
-            },
-        )
+        # 指定 AMP 参考动作复位所使用的数据项、关节顺序和高度偏移。
         self.events.reset_from_ref.params = {
             "animation": ANIMATION_TERM_NAME,
             "asset_cfg": SceneEntityCfg("robot", joint_names=JOINT_NAMES, preserve_order=True),
             "height_offset": 0.0,
         }
 
-        # 终止条件: mirror the PPO BSRL setup.
+        # 终止条件：基座过低、姿态异常或基座接触地面时结束当前 episode。
         self.terminations.base_height.func = amp_mdp.base_height_below_minimum
         self.terminations.base_height.params["minimum_height"] = 0.4
-        # 身体基础如果碰到地面，认为跌倒
         self.terminations.base_contact.params["sensor_cfg"].body_names = [BASE_LINK_NAME]
 
 
 @configclass
 class BSRLAmpEnvCfgPlay(BSRLAmpEnvCfg):
+    """单环境展示配置，不影响 BSRLAmpEnvCfg 的训练指令随机性。"""
+
     def __post_init__(self):
         super().__post_init__()
-        
-        # 播放模式下，往往环境数量为 1
-        # self.viewer.eye = (2.0, 2.0, 1.0)
-        pass
+
+        # 播放时使用标称动力学，避免把训练期域随机化误当成策略性能。
+        self.observations.policy.enable_corruption = False
+        self.events.physics_material = None
+        self.events.add_base_mass = None
+        self.events.randomize_foot_rigid_body_material = None
+        self.events.base_external_force_torque = None
+        self.events.push_robot = None
+        # 第二版事件当前已在 BSRLEventCfg 中注释，保留这些关闭语句供后续恢复时使用。
+        # self.events.add_joint_default_pos = None
+        # self.events.base_com = None
+        # self.events.actuator_gains = None
+        # self.events.body_mass = None
+        # self.events.joint_params = None
+        # self.events.joint_friction = None
+
+        # 播放首次启动及每次 episode 复位时，都恢复 CFG 中的默认根状态、关节位置和 PD 目标。
+        self.events.reset_from_ref = None
+        self.events.reset_to_default = EventTerm(
+            func=il_mdp.reset_scene_to_default,
+            mode="reset",
+            params={"reset_joint_targets": True},
+        )
+
+        # 播放时关闭随机 actuator 延迟，保证不同 checkpoint 的视频可直接比较。
+        for actuator_cfg in self.scene.robot.actuators.values():
+            actuator_cfg.min_delay = 0
+            actuator_cfg.max_delay = 0
+
+        # 展示时固定为 1.0 m/s 前进，不采样横向和转向指令。
+        self.scene.num_envs = 1
+        self.commands.base_velocity.ranges.lin_vel_x = (1.0, 1.0)
+        self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
+        self.commands.base_velocity.ranges.ang_vel_z = (0.0, 0.0)
+        self.commands.base_velocity.ranges.heading = None
+        self.commands.base_velocity.heading_command = False
+        self.commands.base_velocity.rel_heading_envs = 0.0
+        self.commands.base_velocity.rel_standing_envs = 0.0

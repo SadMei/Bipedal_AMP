@@ -9,12 +9,12 @@ from isaaclab.app import AppLauncher
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument(
     "--urdf",
-    default="source/legged_lab/legged_lab/data/Robots/BSRL/export.urdf",
+    default="source/legged_lab/legged_lab/data/Robots/BSRL_urdf/urdf/export.urdf",
     help="Canonical BSRL URDF path.",
 )
 parser.add_argument(
     "--output_dir",
-    default="source/legged_lab/legged_lab/data/Robots/BSRL/export",
+    default="source/legged_lab/legged_lab/data/Robots/BSRL_urdf/urdf/export",
     help="Directory for the generated USD asset.",
 )
 AppLauncher.add_app_launcher_args(parser)
