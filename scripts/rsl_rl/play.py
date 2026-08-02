@@ -39,6 +39,12 @@ parser.add_argument(
     help="Follow the first robot with the viewer camera (enabled by default for video recording).",
 )
 parser.add_argument(
+    "--command_profile",
+    choices=("config", "mixed"),
+    default="config",
+    help="Use commands from the environment config or a deterministic mixed-command sequence.",
+)
+parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
@@ -221,9 +227,22 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     follow_camera = args_cli.video if args_cli.follow_camera is None else args_cli.follow_camera
     robot = sim_env.scene["robot"] if args_cli.debug_state or follow_camera else None
     camera_focus = robot.data.root_pos_w[0, :2].detach().clone() if follow_camera else None
+    command_term = (
+        sim_env.command_manager.get_term("base_velocity")
+        if args_cli.debug_state or args_cli.command_profile == "mixed"
+        else None
+    )
+    mixed_commands = (
+        (0.6, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (0.4, 0.5, 0.0),
+        (0.6, 0.0, 0.35),
+        (0.3, -0.5, 0.0),
+        (0.6, 0.0, -0.35),
+    )
+    mixed_phase_steps = 150
     if args_cli.debug_state:
         action_term = sim_env.action_manager.get_term("joint_pos")
-        command_term = sim_env.command_manager.get_term("base_velocity")
         animation_term = sim_env.animation_manager.get_term("animation")
         debug_body_ids, _ = robot.find_bodies(
             ["link_right_ankle_roll", "link_left_ankle_roll"], preserve_order=True
@@ -261,6 +280,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         start_time = time.time()
         # run everything in inference mode
         with torch.inference_mode():
+            if args_cli.command_profile == "mixed":
+                phase = min(timestep // mixed_phase_steps, len(mixed_commands) - 1)
+                command_term.command[:] = command_term.command.new_tensor(mixed_commands[phase])
             if follow_camera:
                 camera_focus.lerp_(robot.data.root_pos_w[0, :2], 0.15)
                 focus_x, focus_y = camera_focus.detach().cpu().tolist()
