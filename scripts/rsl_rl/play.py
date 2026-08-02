@@ -33,6 +33,12 @@ parser.add_argument(
     help="Optional filename prefix for the playback recording.",
 )
 parser.add_argument(
+    "--follow_camera",
+    action=argparse.BooleanOptionalAction,
+    default=None,
+    help="Follow the first robot with the viewer camera (enabled by default for video recording).",
+)
+parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
@@ -212,8 +218,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     obs = env.get_observations()
     timestep = 0
     sim_env = env.unwrapped
+    follow_camera = args_cli.video if args_cli.follow_camera is None else args_cli.follow_camera
+    robot = sim_env.scene["robot"] if args_cli.debug_state or follow_camera else None
+    camera_focus = robot.data.root_pos_w[0, :2].detach().clone() if follow_camera else None
     if args_cli.debug_state:
-        robot = sim_env.scene["robot"]
         action_term = sim_env.action_manager.get_term("joint_pos")
         command_term = sim_env.command_manager.get_term("base_velocity")
         animation_term = sim_env.animation_manager.get_term("animation")
@@ -253,6 +261,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         start_time = time.time()
         # run everything in inference mode
         with torch.inference_mode():
+            if follow_camera:
+                camera_focus.lerp_(robot.data.root_pos_w[0, :2], 0.15)
+                focus_x, focus_y = camera_focus.detach().cpu().tolist()
+                sim_env.sim.set_camera_view(
+                    eye=[focus_x - 2.0, focus_y + 2.5, 1.5],
+                    target=[focus_x + 0.35, focus_y, 0.55],
+                )
             # agent stepping
             actions = policy(obs)
             # env stepping
