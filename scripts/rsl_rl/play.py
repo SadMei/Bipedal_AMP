@@ -117,6 +117,16 @@ import legged_lab.tasks  # noqa: F401
 
 # PLACEHOLDER: Extension template (do not remove this comment)
 
+MIXED_COMMANDS = (
+    (0.6, 0.0, 0.0),
+    (1.0, 0.0, 0.0),
+    (0.4, 0.5, 0.0),
+    (0.6, 0.0, 0.35),
+    (0.3, -0.5, 0.0),
+    (0.6, 0.0, -0.35),
+)
+MIXED_PHASE_STEPS = 150
+
 
 @hydra_task_config(args_cli.task, args_cli.agent)
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlBaseRunnerCfg):
@@ -152,6 +162,19 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # set the log directory for the environment (works for all environment types)
     env_cfg.log_dir = log_dir
+
+    if args_cli.command_profile == "mixed":
+        # Seed the first command before reset so the initial observation history is consistent.
+        command_cfg = env_cfg.commands.base_velocity
+        initial_command = MIXED_COMMANDS[0]
+        command_cfg.resampling_time_range = (1.0e9, 1.0e9)
+        command_cfg.ranges.lin_vel_x = (initial_command[0], initial_command[0])
+        command_cfg.ranges.lin_vel_y = (initial_command[1], initial_command[1])
+        command_cfg.ranges.ang_vel_z = (initial_command[2], initial_command[2])
+        command_cfg.ranges.heading = None
+        command_cfg.heading_command = False
+        command_cfg.rel_heading_envs = 0.0
+        command_cfg.rel_standing_envs = 0.0
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
@@ -232,15 +255,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         if args_cli.debug_state or args_cli.command_profile == "mixed"
         else None
     )
-    mixed_commands = (
-        (0.6, 0.0, 0.0),
-        (1.0, 0.0, 0.0),
-        (0.4, 0.5, 0.0),
-        (0.6, 0.0, 0.35),
-        (0.3, -0.5, 0.0),
-        (0.6, 0.0, -0.35),
-    )
-    mixed_phase_steps = 150
+    mixed_phase = 0
     if args_cli.debug_state:
         action_term = sim_env.action_manager.get_term("joint_pos")
         animation_term = sim_env.animation_manager.get_term("animation")
@@ -280,9 +295,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         start_time = time.time()
         # run everything in inference mode
         with torch.inference_mode():
-            if args_cli.command_profile == "mixed":
-                phase = min(timestep // mixed_phase_steps, len(mixed_commands) - 1)
-                command_term.command[:] = command_term.command.new_tensor(mixed_commands[phase])
             if follow_camera:
                 camera_focus.lerp_(robot.data.root_pos_w[0, :2], 0.15)
                 focus_x, focus_y = camera_focus.detach().cpu().tolist()
@@ -292,6 +304,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 )
             # agent stepping
             actions = policy(obs)
+            if args_cli.command_profile == "mixed":
+                # Queue the next phase before env.step builds the observation used by the next action.
+                next_phase = min((timestep + 1) // MIXED_PHASE_STEPS, len(MIXED_COMMANDS) - 1)
+                if next_phase != mixed_phase:
+                    mixed_phase = next_phase
+                    next_command = MIXED_COMMANDS[mixed_phase]
+                    command_term.cfg.ranges.lin_vel_x = (next_command[0], next_command[0])
+                    command_term.cfg.ranges.lin_vel_y = (next_command[1], next_command[1])
+                    command_term.cfg.ranges.ang_vel_z = (next_command[2], next_command[2])
+                    command_term.command[:] = command_term.command.new_tensor(next_command)
             # env stepping
             obs, _, dones, _ = env.step(actions)
             # reset recurrent states for episodes that have terminated

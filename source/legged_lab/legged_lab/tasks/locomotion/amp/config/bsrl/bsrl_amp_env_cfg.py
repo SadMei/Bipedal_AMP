@@ -12,6 +12,7 @@ from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
+from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
@@ -246,15 +247,15 @@ class BSRLObservationsCfg:
 class BSRLEventCfg:
     """第一版成功训练使用的事件配置。"""
 
-    # 第一版：启动时仅随机化非足部刚体材料，足底材料由下面的独立事件固定。
+    # 每个 episode 随机化全身刚体材料，包括足底摩擦和恢复系数。
     physics_material = EventTerm(
         func=amp_mdp.randomize_rigid_body_material,
-        mode="startup",
+        mode="reset",
         params={
-            "asset_cfg": SceneEntityCfg("robot", body_names=[f"^(?!.*{FOOT_REGEX}).*"]),
-            "static_friction_range": (0.3, 1.0),
-            "dynamic_friction_range": (0.3, 1.0),
-            "restitution_range": (0.0, 0.0),
+            "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
+            "static_friction_range": (0.5, 1.5),
+            "dynamic_friction_range": (0.5, 1.5),
+            "restitution_range": (0.0, 0.2),
             "num_buckets": 64,
         },
     )
@@ -295,93 +296,77 @@ class BSRLEventCfg:
         params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}},
     )
 
-    # 第一版：足底使用固定的高摩擦、零恢复系数材料。
-    randomize_foot_rigid_body_material = EventTerm(
-        func=amp_mdp.randomize_rigid_body_material,
-        mode="startup",
-        params={
-            "asset_cfg": SceneEntityCfg("robot", body_names=FOOT_NAMES, preserve_order=True),
-            "static_friction_range": (1.2, 1.2),
-            "dynamic_friction_range": (1.0, 1.0),
-            "restitution_range": (0.0, 0.0),
-            "num_buckets": 1,
-            "make_consistent": True,
-        },
-    )
+    # 全身材料事件已经包含足底，不再用固定足底材料覆盖随机结果。
+    randomize_foot_rigid_body_material = None
 
     # -------------------------------------------------------------------------
-    # 第二版事件保留区：本轮验证中全部停用，不删除，后续按消融实验逐项恢复。
+    # 扩展随机化事件：本轮按参考配置全部启用。
     # -------------------------------------------------------------------------
-    # physics_material = EventTerm(
-    #     func=amp_mdp.randomize_rigid_body_material,
-    #     mode="reset",
-    #     params={
-    #         "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
-    #         "static_friction_range": (0.5, 1.5),
-    #         "dynamic_friction_range": (0.5, 1.5),
-    #         "restitution_range": (0.0, 0.2),
-    #         "num_buckets": 64,
-    #     },
-    # )
-    # add_joint_default_pos = EventTerm(
-    #     func=amp_mdp.randomize_joint_default_pos,
-    #     mode="startup",
-    #     params={
-    #         "asset_cfg": SceneEntityCfg("robot", joint_names=[".*"]),
-    #         "pos_distribution_params": (-0.05, 0.05),
-    #         "operation": "add",
-    #     },
-    # )
-    # base_com = EventTerm(
-    #     func=amp_mdp.randomize_rigid_body_com,
-    #     mode="startup",
-    #     params={
-    #         "asset_cfg": SceneEntityCfg("robot", body_names=BASE_LINK_NAME),
-    #         "com_range": {"x": (-0.025, 0.025), "y": (-0.05, 0.05), "z": (-0.05, 0.05)},
-    #     },
-    # )
-    # actuator_gains = EventTerm(
-    #     func=amp_mdp.randomize_actuator_gains,
-    #     mode="startup",
-    #     params={
-    #         "asset_cfg": SceneEntityCfg("robot", joint_names=[".*"]),
-    #         "stiffness_distribution_params": (0.8, 1.2),
-    #         "damping_distribution_params": (0.8, 1.2),
-    #         "operation": "scale",
-    #         "distribution": "uniform",
-    #     },
-    # )
-    # body_mass = EventTerm(
-    #     func=amp_mdp.randomize_rigid_body_mass,
-    #     mode="startup",
-    #     params={
-    #         "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
-    #         "mass_distribution_params": (0.8, 1.2),
-    #         "operation": "scale",
-    #         "distribution": "uniform",
-    #         "recompute_inertia": True,
-    #     },
-    # )
-    # joint_params = EventTerm(
-    #     func=amp_mdp.randomize_joint_parameters,
-    #     mode="startup",
-    #     params={
-    #         "asset_cfg": SceneEntityCfg("robot", joint_names=[".*"]),
-    #         "armature_distribution_params": (0.8, 1.2),
-    #         "operation": "scale",
-    #         "distribution": "uniform",
-    #     },
-    # )
-    # joint_friction = EventTerm(
-    #     func=amp_mdp.randomize_joint_parameters,
-    #     mode="startup",
-    #     params={
-    #         "asset_cfg": SceneEntityCfg("robot", joint_names=[".*"]),
-    #         "friction_distribution_params": (0.0, 0.05),
-    #         "operation": "abs",
-    #         "distribution": "uniform",
-    #     },
-    # )
+    # 启动时加入关节零位误差，并同步关节位置动作的默认 offset。
+    add_joint_default_pos = EventTerm(
+        func=amp_mdp.randomize_joint_default_pos,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*"]),
+            "pos_distribution_params": (-0.05, 0.05),
+            "operation": "add",
+        },
+    )
+    # 启动时随机偏移机身质心，覆盖装配和载荷分布误差。
+    base_com = EventTerm(
+        func=amp_mdp.randomize_rigid_body_com,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=BASE_LINK_NAME),
+            "com_range": {"x": (-0.025, 0.025), "y": (-0.05, 0.05), "z": (-0.05, 0.05)},
+        },
+    )
+    # 启动时按环境缩放关节 PD 增益，模拟电机和控制器参数误差。
+    actuator_gains = EventTerm(
+        func=amp_mdp.randomize_actuator_gains,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*"]),
+            "stiffness_distribution_params": (0.8, 1.2),
+            "damping_distribution_params": (0.8, 1.2),
+            "operation": "scale",
+            "distribution": "uniform",
+        },
+    )
+    # 启动时缩放全身质量，并按新质量重算惯量。
+    body_mass = EventTerm(
+        func=amp_mdp.randomize_rigid_body_mass,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
+            "mass_distribution_params": (0.8, 1.2),
+            "operation": "scale",
+            "distribution": "uniform",
+            "recompute_inertia": True,
+        },
+    )
+    # 启动时缩放关节 armature，模拟转子和传动等效惯量误差。
+    joint_params = EventTerm(
+        func=amp_mdp.randomize_joint_parameters,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*"]),
+            "armature_distribution_params": (0.8, 1.2),
+            "operation": "scale",
+            "distribution": "uniform",
+        },
+    )
+    # 启动时随机化理想转动关节的摩擦参数。
+    joint_friction = EventTerm(
+        func=amp_mdp.randomize_joint_parameters,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*"]),
+            "friction_distribution_params": (0.0, 0.05),
+            "operation": "abs",
+            "distribution": "uniform",
+        },
+    )
     # base_external_force_torque = EventTerm(
     #     func=amp_mdp.apply_external_force_torque,
     #     mode="reset",
@@ -400,17 +385,39 @@ class BSRLEventCfg:
 
 
 @configclass
+class BSRLCurriculumCfg:
+    """同步扩大速度指令并收紧线速度跟踪精度。"""
+
+    velocity_range_and_tracking_std = CurrTerm(
+        func=amp_mdp.velocity_range_and_tracking_std,
+        params={
+            "command_name": "base_velocity",
+            "reward_term_name": "track_lin_vel_xy_exp",
+            # PPO 每轮采集 24 个控制步；课程分别在第 5000 和 12000 轮切换。
+            "steps_per_iteration": 24,
+            "phase_boundaries": (5000, 12000),
+            "lin_vel_x_ranges": ((-1.0, 1.0), (-1.5, 1.5), (-2.0, 2.0)),
+            "lin_vel_y_ranges": ((-0.5, 0.5), (-0.8, 0.8), (-1.2, 1.2)),
+            "ang_vel_z_ranges": ((-0.3, 0.3), (-0.45, 0.45), (-0.6, 0.6)),
+            "tracking_stds": (0.5, 0.4, 0.3),
+        },
+    )
+
+
+@configclass
 class BSRLAmpEnvCfg(LocomotionAmpEnvCfg):
     """BSRL 的 AMP 训练环境配置。"""
 
     observations: BSRLObservationsCfg = BSRLObservationsCfg()
     events: BSRLEventCfg = BSRLEventCfg()
+    curriculum: BSRLCurriculumCfg = BSRLCurriculumCfg()
 
     def __post_init__(self):
         super().__post_init__()
 
         # 将场景中的机器人替换为你的 BSRL 配置
         self.scene.robot = BSRL_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+        self.scene.num_envs = 8192
 
         # 控制频率为 50 Hz：200 Hz 物理仿真每 4 步执行一次策略。
         self.decimation = 4
@@ -435,10 +442,10 @@ class BSRLAmpEnvCfg(LocomotionAmpEnvCfg):
         self.animation.animation.num_steps_to_use = AMP_NUM_STEPS
         self.animation.animation.motion_data_components[6] = "key_body_pos_b"
 
-        # 训练速度指令范围；与上面的推扰 VELOCITY_RANGE 无关。
-        self.commands.base_velocity.ranges.lin_vel_x = (-1.0, 1.0)
-        self.commands.base_velocity.ranges.lin_vel_y = (-1.0, 1.0)
-        self.commands.base_velocity.ranges.ang_vel_z = (-0.4, 0.4)
+        # 高速训练指令范围；前向范围仍低于跑步参考数据的峰值速度。
+        self.commands.base_velocity.ranges.lin_vel_x = (-2.0, 2.0)
+        self.commands.base_velocity.ranges.lin_vel_y = (-1.2, 1.2)
+        self.commands.base_velocity.ranges.ang_vel_z = (-0.6, 0.6)
         self.commands.base_velocity.rel_standing_envs = 0.02
 
         # 任务奖励：保持现有 PPO 任务奖励和 AMP 风格奖励组合不变。
@@ -446,7 +453,7 @@ class BSRLAmpEnvCfg(LocomotionAmpEnvCfg):
         self.rewards.track_lin_vel_xy_exp.func = amp_mdp.track_lin_vel_xy_yaw_frame_exp
         self.rewards.track_lin_vel_xy_exp.params = {
             "command_name": "base_velocity",
-            "std": math.sqrt(0.25),
+            "std": 0.3,
         }
         self.rewards.track_ang_vel_z_exp.weight = 2.0
         self.rewards.track_ang_vel_z_exp.func = amp_mdp.track_ang_vel_z_world_exp
@@ -454,6 +461,16 @@ class BSRLAmpEnvCfg(LocomotionAmpEnvCfg):
             "command_name": "base_velocity",
             "std": math.sqrt(0.25),
         }
+        # 指数奖励在误差很大时接近零；超额误差惩罚提供全程可见的稠密信号。
+        self.rewards.lin_vel_xy_error_excess_l2 = RewTerm(
+            func=amp_mdp.lin_vel_xy_yaw_frame_error_excess_l2,
+            weight=-1.0,
+            params={
+                "command_name": "base_velocity",
+                "threshold": 0.25,
+                "max_excess": 2.0,
+            },
+        )
         self.rewards.lin_vel_z_l2.weight = 0.0
         self.rewards.ang_vel_xy_l2.weight = -0.1
         self.rewards.flat_orientation_l2.weight = -0.2
@@ -511,9 +528,10 @@ class BSRLAmpEnvCfg(LocomotionAmpEnvCfg):
             weight=-0.2,
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_yaw", ".*_hip_roll"])},
         )
+
         self.rewards.joint_pos_penalty = RewTerm(
             func=amp_mdp.joint_deviation_l1,
-            weight=-1.0,
+            weight=0.0,
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=JOINT_NAMES)},
         )
         self.rewards.feet_slide = RewTerm(
@@ -546,19 +564,20 @@ class BSRLAmpEnvCfgPlay(BSRLAmpEnvCfg):
         super().__post_init__()
 
         # 播放时使用标称动力学，避免把训练期域随机化误当成策略性能。
+        self.curriculum.velocity_range_and_tracking_std = None
         self.observations.policy.enable_corruption = False
         self.events.physics_material = None
         self.events.add_base_mass = None
         self.events.randomize_foot_rigid_body_material = None
         self.events.base_external_force_torque = None
         self.events.push_robot = None
-        # 第二版事件当前已在 BSRLEventCfg 中注释，保留这些关闭语句供后续恢复时使用。
-        # self.events.add_joint_default_pos = None
-        # self.events.base_com = None
-        # self.events.actuator_gains = None
-        # self.events.body_mass = None
-        # self.events.joint_params = None
-        # self.events.joint_friction = None
+        # 训练期随机化在播放时全部关闭。
+        self.events.add_joint_default_pos = None
+        self.events.base_com = None
+        self.events.actuator_gains = None
+        self.events.body_mass = None
+        self.events.joint_params = None
+        self.events.joint_friction = None
 
         # 播放首次启动及每次 episode 复位时，都恢复 CFG 中的默认根状态、关节位置和 PD 目标。
         self.events.reset_from_ref = None

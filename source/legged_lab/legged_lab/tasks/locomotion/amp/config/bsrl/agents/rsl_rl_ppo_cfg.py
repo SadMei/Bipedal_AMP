@@ -8,8 +8,8 @@ from legged_lab.rsl_rl import RslRlPpoAmpAlgorithmCfg, RslRlAmpCfg
 class BSRLRslRlOnPolicyRunnerAmpCfg(RslRlOnPolicyRunnerCfg):
     class_name = "AMPRunner"
     num_steps_per_env = 24
-    max_iterations = 10000
-    save_interval = 200
+    max_iterations = 20000
+    save_interval = 1000
     experiment_name = "bsrl_amp"
     obs_groups = {
         "policy": ["policy"],

@@ -13,10 +13,11 @@ from legged_lab.assets.delayed_implicit_actuator import DelayedImplicitActuatorC
 LEGGED_LAB_ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 # GMR walk1 第一帧左右腿平均并按 0.1 rad 对称化后的贴地站姿高度。
 BSRL_DEFAULT_ROOT_HEIGHT = 0.8665
-# 保持 delayed actuator 框架，但关闭延迟以恢复第一版动力学。
+
+# 训练时为每个环境随机采样 0~4 个物理步的执行器命令延迟。
 BSRL_ACTUATOR_MIN_DELAY = 0
-# BSRL_ACTUATOR_MAX_DELAY = 4
-BSRL_ACTUATOR_MAX_DELAY = 0
+BSRL_ACTUATOR_MAX_DELAY = 4
+
 BSRL_ACTION_SCALE_MULTIPLIER = {
     "joint_.*_hip_pitch": 0.25,
     "joint_.*_hip_roll": 0.25,
@@ -25,7 +26,6 @@ BSRL_ACTION_SCALE_MULTIPLIER = {
     "joint_.*_ankle_roll": 0.25,
     "joint_.*_ankle_pitch": 0.25,
 }
-
 
 @configclass
 class BSRLArticulationCfg(ArticulationCfg):

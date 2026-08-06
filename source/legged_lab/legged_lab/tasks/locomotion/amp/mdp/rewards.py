@@ -51,3 +51,20 @@ def base_height_below_minimum(
     """Terminate when the robot base drops below a minimum world-frame height."""
     asset: RigidObject = env.scene[asset_cfg.name]
     return asset.data.root_pos_w[:, 2] < minimum_height
+
+
+def lin_vel_xy_yaw_frame_error_excess_l2(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    threshold: float,
+    max_excess: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize squared XY velocity error only after it exceeds a tolerance."""
+    asset: RigidObject = env.scene[asset_cfg.name]
+    yaw_quat = math_utils.yaw_quat(asset.data.root_quat_w)
+    vel_yaw = math_utils.quat_apply_inverse(yaw_quat, asset.data.root_lin_vel_w[:, :3])
+    command = env.command_manager.get_command(command_name)[:, :2]
+    error = torch.linalg.vector_norm(command - vel_yaw[:, :2], dim=1)
+    excess = torch.clamp(error - threshold, min=0.0, max=max_excess)
+    return torch.square(excess)
