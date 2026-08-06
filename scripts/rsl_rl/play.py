@@ -93,7 +93,9 @@ simulation_app = app_launcher.app
 import gymnasium as gym
 import time
 import torch
+import carb
 import isaaclab.utils.math as math_utils
+import omni.appwindow
 
 from rsl_rl.runners import DistillationRunner, OnPolicyRunner
 
@@ -256,6 +258,24 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         else None
     )
     mixed_phase = 0
+    reset_requested = False
+    input_interface = None
+    keyboard = None
+    keyboard_subscription = None
+    if not args_cli.headless:
+        input_interface = carb.input.acquire_input_interface()
+        keyboard = omni.appwindow.get_default_app_window().get_keyboard()
+
+        def _on_keyboard_event(event, *args):
+            del args
+            nonlocal reset_requested
+            if event.type == carb.input.KeyboardEventType.KEY_PRESS and event.input.name == "R":
+                reset_requested = True
+            return True
+
+        keyboard_subscription = input_interface.subscribe_to_keyboard_events(keyboard, _on_keyboard_event)
+        print("[INFO] Press R in the viewport to reset the robot to its nominal default state.")
+
     if args_cli.debug_state:
         action_term = sim_env.action_manager.get_term("joint_pos")
         animation_term = sim_env.animation_manager.get_term("animation")
@@ -295,6 +315,22 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         start_time = time.time()
         # run everything in inference mode
         with torch.inference_mode():
+            if reset_requested:
+                reset_requested = False
+                timestep = 0
+                mixed_phase = 0
+                if args_cli.command_profile == "mixed":
+                    initial_command = MIXED_COMMANDS[0]
+                    command_term.cfg.ranges.lin_vel_x = (initial_command[0], initial_command[0])
+                    command_term.cfg.ranges.lin_vel_y = (initial_command[1], initial_command[1])
+                    command_term.cfg.ranges.ang_vel_z = (initial_command[2], initial_command[2])
+                obs, _ = env.reset()
+                policy_nn.reset(torch.ones(env.num_envs, dtype=torch.bool, device=env.unwrapped.device))
+                if args_cli.command_profile == "mixed":
+                    command_term.command[:] = command_term.command.new_tensor(MIXED_COMMANDS[0])
+                if follow_camera:
+                    camera_focus.copy_(robot.data.root_pos_w[0, :2])
+                print("[INFO] Robot reset to the nominal default state.")
             if follow_camera:
                 camera_focus.lerp_(robot.data.root_pos_w[0, :2], 0.15)
                 focus_x, focus_y = camera_focus.detach().cpu().tolist()
@@ -332,6 +368,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         sleep_time = dt - (time.time() - start_time)
         if args_cli.real_time and sleep_time > 0:
             time.sleep(sleep_time)
+
+    if keyboard_subscription is not None:
+        input_interface.unsubscribe_to_keyboard_events(keyboard, keyboard_subscription)
 
     # close the simulator
     env.close()
