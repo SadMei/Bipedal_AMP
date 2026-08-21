@@ -8,8 +8,26 @@
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import builtins
 import os
 import sys
+from types import SimpleNamespace
+
+# AppLauncher removes and reloads IsaacLab modules while Kit starts. Intercept
+# only this version-module import so the mixed 2.3.1/5.1 install can initialize.
+_original_import = builtins.__import__
+
+
+def _import_with_isaaclab_version_compat(name, globals=None, locals=None, fromlist=(), level=0):
+    module = _original_import(name, globals, locals, fromlist, level)
+    if name == "isaaclab.utils.version":
+        version_module = sys.modules.get(name)
+        if version_module is not None and not hasattr(version_module, "get_isaac_sim_version"):
+            version_module.get_isaac_sim_version = lambda: SimpleNamespace(major=5, minor=1, patch=0)
+    return module
+
+
+builtins.__import__ = _import_with_isaaclab_version_compat
 
 from local_source import prefer_local_source_tree, prepare_agent_cfg_for_local_rsl_rl  # isort: skip
 
@@ -59,8 +77,11 @@ if args_cli.video:
 sys.argv = [sys.argv[0]] + hydra_args
 
 # launch omniverse app
-app_launcher = AppLauncher(args_cli)
-simulation_app = app_launcher.app
+try:
+    app_launcher = AppLauncher(args_cli)
+    simulation_app = app_launcher.app
+finally:
+    builtins.__import__ = _original_import
 
 """Check for minimum supported RSL-RL version."""
 

@@ -253,23 +253,15 @@ class BSRLEventCfg:
         mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
-            "static_friction_range": (0.5, 1.5),
-            "dynamic_friction_range": (0.5, 1.5),
+            "static_friction_range": (0.8, 1.2),
+            "dynamic_friction_range": (0.8, 1.2),
             "restitution_range": (0.0, 0.2),
             "num_buckets": 64,
         },
     )
 
-    # 第一版：仅对 base_link 质量增加 -1~3 kg，不改动腿部质量与惯量。
-    add_base_mass = EventTerm(
-        func=amp_mdp.randomize_rigid_body_mass,
-        mode="startup",
-        params={
-            "asset_cfg": SceneEntityCfg("robot", body_names=[BASE_LINK_NAME]),
-            "mass_distribution_params": (-1.0, 3.0),
-            "operation": "add",
-        },
-    )
+    # 不再额外增加 base 质量；全身质量与惯量统一由 body_mass 事件缩放。
+    add_base_mass = None
 
     # 第一版：不持续施加外力或外力矩。
     base_external_force_torque = EventTerm(
@@ -282,18 +274,18 @@ class BSRLEventCfg:
         },
     )
 
-    # AMP 训练仍从参考动作中的随机时刻初始化机器人状态。
+    # 与宇树 G1 一致，训练环境全部从参考动作的随机帧复位。
     reset_from_ref = EventTerm(func=amp_mdp.reset_from_ref, mode="reset", params=MISSING)
 
     # 仅由播放配置启用；训练使用上面的参考动作复位。
     reset_to_default = None
 
-    # 第一版：每 5 秒只叠加 x/y 方向根速度，不扰动高度与角速度。
+    # 每 5 秒只扰动 x/y 方向根速度，不扰动高度与角速度。
     push_robot = EventTerm(
         func=amp_mdp.push_by_setting_velocity,
         mode="interval",
         interval_range_s=(5.0, 5.0),
-        params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}},
+        params={"velocity_range": {"x": (-0.2, 0.2), "y": (-0.2, 0.2)}},
     )
 
     # 全身材料事件已经包含足底，不再用固定足底材料覆盖随机结果。
@@ -386,7 +378,7 @@ class BSRLEventCfg:
 
 @configclass
 class BSRLCurriculumCfg:
-    """同步扩大速度指令并收紧线速度跟踪精度。"""
+    """逐步增加到适合当前 BSRL 稳定性的中等速度指令。"""
 
     velocity_range_and_tracking_std = CurrTerm(
         func=amp_mdp.velocity_range_and_tracking_std,
@@ -396,9 +388,9 @@ class BSRLCurriculumCfg:
             # PPO 每轮采集 24 个控制步；课程分别在第 5000 和 12000 轮切换。
             "steps_per_iteration": 24,
             "phase_boundaries": (5000, 12000),
-            "lin_vel_x_ranges": ((-1.0, 1.0), (-1.5, 1.5), (-2.0, 2.0)),
-            "lin_vel_y_ranges": ((-0.5, 0.5), (-0.8, 0.8), (-1.2, 1.2)),
-            "ang_vel_z_ranges": ((-0.3, 0.3), (-0.45, 0.45), (-0.6, 0.6)),
+            "lin_vel_x_ranges": ((-0.6, 0.6), (-0.9, 0.9), (-1.2, 1.2)),
+            "lin_vel_y_ranges": ((-0.4, 0.4), (-0.6, 0.6), (-0.8, 0.8)),
+            "ang_vel_z_ranges": ((-0.25, 0.25), (-0.375, 0.375), (-0.5, 0.5)),
             "tracking_stds": (0.5, 0.4, 0.3),
         },
     )
@@ -424,6 +416,9 @@ class BSRLAmpEnvCfg(LocomotionAmpEnvCfg):
 
         # 关节位置动作使用资产中定义的逐关节 scale，并保持 SDK 关节顺序。
         self.actions.joint_pos.scale = BSRL_ACTION_SCALE
+        # 不裁剪处理后的 PD 位置目标。参考动作中部分关节正好位于 URDF 硬限位；
+        # 允许目标略微越过限位，才能由位置误差产生抵住机械限位所需的预载力矩。
+        # 与宇树一致，runner 不裁剪原始动作；这里仅保留宽松的数值保护范围。
         self.actions.joint_pos.clip = {".*": (-100.0, 100.0)}
         self.actions.joint_pos.joint_names = JOINT_NAMES
         self.actions.joint_pos.preserve_order = True
@@ -442,28 +437,28 @@ class BSRLAmpEnvCfg(LocomotionAmpEnvCfg):
         self.animation.animation.num_steps_to_use = AMP_NUM_STEPS
         self.animation.animation.motion_data_components[6] = "key_body_pos_b"
 
-        # 高速训练指令范围；前向范围仍低于跑步参考数据的峰值速度。
-        self.commands.base_velocity.ranges.lin_vel_x = (-2.0, 2.0)
-        self.commands.base_velocity.ranges.lin_vel_y = (-1.2, 1.2)
-        self.commands.base_velocity.ranges.ang_vel_z = (-0.6, 0.6)
+        # 中等速度训练指令；最高档为 vx=1.2、vy=0.8、yaw=0.5，优先学习稳定行走。
+        self.commands.base_velocity.ranges.lin_vel_x = (-1.2, 1.2)
+        self.commands.base_velocity.ranges.lin_vel_y = (-0.8, 0.8)
+        self.commands.base_velocity.ranges.ang_vel_z = (-0.5, 0.5)
         self.commands.base_velocity.rel_standing_envs = 0.02
 
         # 任务奖励：保持现有 PPO 任务奖励和 AMP 风格奖励组合不变。
         self.rewards.track_lin_vel_xy_exp.weight = 3.0
-        self.rewards.track_lin_vel_xy_exp.func = amp_mdp.track_lin_vel_xy_yaw_frame_exp
+        self.rewards.track_lin_vel_xy_exp.func = amp_mdp.track_lin_vel_xy_base_frame_exp
         self.rewards.track_lin_vel_xy_exp.params = {
             "command_name": "base_velocity",
             "std": 0.3,
         }
         self.rewards.track_ang_vel_z_exp.weight = 2.0
-        self.rewards.track_ang_vel_z_exp.func = amp_mdp.track_ang_vel_z_world_exp
+        self.rewards.track_ang_vel_z_exp.func = amp_mdp.track_ang_vel_z_base_frame_exp
         self.rewards.track_ang_vel_z_exp.params = {
             "command_name": "base_velocity",
             "std": math.sqrt(0.25),
         }
         # 指数奖励在误差很大时接近零；超额误差惩罚提供全程可见的稠密信号。
         self.rewards.lin_vel_xy_error_excess_l2 = RewTerm(
-            func=amp_mdp.lin_vel_xy_yaw_frame_error_excess_l2,
+            func=amp_mdp.lin_vel_xy_base_frame_error_excess_l2,
             weight=-1.0,
             params={
                 "command_name": "base_velocity",
@@ -505,14 +500,16 @@ class BSRLAmpEnvCfg(LocomotionAmpEnvCfg):
                 "asset_cfg": SceneEntityCfg("robot", joint_names=JOINT_NAMES),
             },
         )
-        self.rewards.feet_air_time.weight = 1.0
+        # 直接采用宇树 G1 AMP 参数，减弱对长单支撑和大步幅的偏好。
+        self.rewards.feet_air_time.weight = 0.5
         self.rewards.feet_air_time.func = amp_mdp.feet_air_time_positive_biped
         self.rewards.feet_air_time.params = {
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=FOOT_NAMES, preserve_order=True),
-            "threshold": 0.5,
+            "threshold": 0.4,
         }
-        self.rewards.undesired_contacts.weight = 0.0
+        # 非足部刚体接触地面时施加惩罚；足底碰撞 link 由 FOOT_REGEX 排除。
+        self.rewards.undesired_contacts.weight = -0.1
         self.rewards.undesired_contacts.params["sensor_cfg"].body_names = [f"^(?!.*{FOOT_REGEX}).*"]
         self.rewards.contact_forces = RewTerm(
             func=il_mdp.contact_forces,
@@ -552,7 +549,8 @@ class BSRLAmpEnvCfg(LocomotionAmpEnvCfg):
 
         # 终止条件：基座过低、姿态异常或基座接触地面时结束当前 episode。
         self.terminations.base_height.func = amp_mdp.base_height_below_minimum
-        self.terminations.base_height.params["minimum_height"] = 0.4
+        # 基座明显下沉时提前结束，避免机器人跪下后继续收集无效轨迹。
+        self.terminations.base_height.params["minimum_height"] = 0.5
         self.terminations.base_contact.params["sensor_cfg"].body_names = [BASE_LINK_NAME]
 
 

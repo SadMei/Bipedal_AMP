@@ -1,7 +1,10 @@
 from isaaclab.utils import configclass
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg
 
-from legged_lab.rsl_rl import RslRlPpoAmpAlgorithmCfg, RslRlAmpCfg
+from legged_lab.rsl_rl import (
+    RslRlAmpCfg,
+    RslRlPpoAmpAlgorithmCfg,
+)
 
 
 @configclass
@@ -17,9 +20,9 @@ class BSRLRslRlOnPolicyRunnerAmpCfg(RslRlOnPolicyRunnerCfg):
         "discriminator": ["disc"],
         "discriminator_demonstration": ["disc_demo"],
     }
+    # 与宇树 G1 一致，使用 RSL-RL 原生 ActorCritic 和默认 scalar std。
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
-        noise_std_type="log",
         actor_hidden_dims=[512, 256, 128],
         critic_hidden_dims=[512, 256, 128],
         actor_obs_normalization=False,
