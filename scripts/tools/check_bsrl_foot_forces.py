@@ -6,6 +6,11 @@ from isaaclab.app import AppLauncher
 
 
 parser = argparse.ArgumentParser(description="Minimal BSRL foot contact-force smoke test.")
+parser.add_argument(
+    "--disable_self_collisions",
+    action="store_true",
+    help="Disable articulation self-collisions for an A/B contact comparison.",
+)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 args_cli.headless = True
@@ -37,6 +42,9 @@ ROOT_HEIGHTS = [
     BSRL_DEFAULT_ROOT_HEIGHT - 0.02,
 ]
 
+ROBOT_CFG = BSRL_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+ROBOT_CFG.spawn.articulation_props.enabled_self_collisions = not args_cli.disable_self_collisions
+
 
 @configclass
 class BSRLContactSceneCfg(InteractiveSceneCfg):
@@ -53,7 +61,7 @@ class BSRLContactSceneCfg(InteractiveSceneCfg):
         ),
         debug_vis=False,
     )
-    robot: ArticulationCfg = BSRL_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+    robot: ArticulationCfg = ROBOT_CFG
     contact_forces = ContactSensorCfg(prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=5, track_air_time=True)
     sky_light = AssetBaseCfg(prim_path="/World/skyLight", spawn=sim_utils.DomeLightCfg(intensity=750.0))
 

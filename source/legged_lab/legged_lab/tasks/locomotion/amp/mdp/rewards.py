@@ -53,6 +53,21 @@ def base_height_below_minimum(
     return asset.data.root_pos_w[:, 2] < minimum_height
 
 
+def lin_vel_xy_base_frame_error_excess_l2(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    threshold: float,
+    max_excess: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize excess XY velocity error in the command's base frame."""
+    asset: RigidObject = env.scene[asset_cfg.name]
+    command = env.command_manager.get_command(command_name)[:, :2]
+    error = torch.linalg.vector_norm(command - asset.data.root_lin_vel_b[:, :2], dim=1)
+    excess = torch.clamp(error - threshold, min=0.0, max=max_excess)
+    return torch.square(excess)
+
+
 def lin_vel_xy_yaw_frame_error_excess_l2(
     env: ManagerBasedRLEnv,
     command_name: str,
@@ -60,11 +75,5 @@ def lin_vel_xy_yaw_frame_error_excess_l2(
     max_excess: float,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
-    """Penalize squared XY velocity error only after it exceeds a tolerance."""
-    asset: RigidObject = env.scene[asset_cfg.name]
-    yaw_quat = math_utils.yaw_quat(asset.data.root_quat_w)
-    vel_yaw = math_utils.quat_apply_inverse(yaw_quat, asset.data.root_lin_vel_w[:, :3])
-    command = env.command_manager.get_command(command_name)[:, :2]
-    error = torch.linalg.vector_norm(command - vel_yaw[:, :2], dim=1)
-    excess = torch.clamp(error - threshold, min=0.0, max=max_excess)
-    return torch.square(excess)
+    """Backward-compatible name for base-frame excess velocity error."""
+    return lin_vel_xy_base_frame_error_excess_l2(env, command_name, threshold, max_excess, asset_cfg)
