@@ -11,6 +11,10 @@ import argparse
 import os
 import sys
 
+from local_source import prefer_local_source_tree, prepare_agent_cfg_for_local_rsl_rl  # isort: skip
+
+repo_root, local_rsl_rl_version = prefer_local_source_tree(__file__)
+
 from isaaclab.app import AppLauncher
 
 # local imports
@@ -123,6 +127,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     """Train with RSL-RL agent."""
     # override configurations with non-hydra CLI arguments
     agent_cfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
+    agent_cfg = prepare_agent_cfg_for_local_rsl_rl(agent_cfg, local_rsl_rl_version)
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     agent_cfg.max_iterations = (
         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations

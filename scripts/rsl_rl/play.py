@@ -11,6 +11,10 @@ import argparse
 import os
 import sys
 
+from local_source import prefer_local_source_tree, prepare_agent_cfg_for_local_rsl_rl  # isort: skip
+
+repo_root, local_rsl_rl_version = prefer_local_source_tree(__file__)
+
 from isaaclab.app import AppLauncher
 
 # local imports
@@ -110,7 +114,12 @@ from isaaclab.envs import (
 from isaaclab.utils.assets import retrieve_file_path
 from isaaclab.utils.dict import print_dict
 from isaaclab.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
-from isaaclab_rl.rsl_rl import RslRlBaseRunnerCfg, RslRlVecEnvWrapper, export_policy_as_jit, export_policy_as_onnx
+from isaaclab_rl.rsl_rl import (
+    RslRlBaseRunnerCfg,
+    RslRlVecEnvWrapper,
+    export_policy_as_jit,
+    export_policy_as_onnx,
+)
 from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
@@ -139,6 +148,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # override configurations with non-hydra CLI arguments
     agent_cfg: RslRlBaseRunnerCfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
+    agent_cfg = prepare_agent_cfg_for_local_rsl_rl(agent_cfg, local_rsl_rl_version)
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
 
     # set the environment seed
