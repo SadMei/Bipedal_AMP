@@ -4,7 +4,7 @@ import isaaclab.sim as sim_utils
 from isaaclab.assets.articulation import ArticulationCfg
 from isaaclab.utils import configclass
 
-from legged_lab.assets.delayed_implicit_actuator import DelayedImplicitActuatorCfg
+from legged_lab.assets.delayed_implicit_actuator import DelayedPowerLimitedPDActuatorCfg
 
 # 第一版原生 actuator 写法保留在下方注释区，供消融实验对照。
 # from isaaclab.actuators import ImplicitActuatorCfg
@@ -17,6 +17,15 @@ BSRL_DEFAULT_ROOT_HEIGHT = 0.8665
 # 训练时为每个环境随机采样 0~4 个物理步的执行器命令延迟。
 BSRL_ACTUATOR_MIN_DELAY = 0
 BSRL_ACTUATOR_MAX_DELAY = 4
+
+# Gearbox-output limits from the SETZ motor datasheet. The small motor is the
+# faster SETZ70-1EB-J; the large motor is the higher-torque SETZ90-1FF-J.
+BSRL_SMALL_MOTOR_PEAK_TORQUE = 112.0
+BSRL_SMALL_MOTOR_PEAK_SPEED = 250.0 * 2.0 * 3.141592653589793 / 60.0
+BSRL_SMALL_MOTOR_PEAK_POWER = 1250.0
+BSRL_LARGE_MOTOR_PEAK_TORQUE = 216.0
+BSRL_LARGE_MOTOR_PEAK_SPEED = 144.5 * 2.0 * 3.141592653589793 / 60.0
+BSRL_LARGE_MOTOR_PEAK_POWER = 1050.0
 
 BSRL_ACTION_SCALE_MULTIPLIER = {
     "joint_.*_hip_pitch": 0.25,
@@ -68,47 +77,54 @@ BSRL_CFG = BSRLArticulationCfg(
         joint_vel={".*": 0.0},
     ),
     actuators={
-        # 现有 delayed actuator 框架使用第一版成功训练的 PD、限位和 armature。
-        "legs": DelayedImplicitActuatorCfg(
+        # SETZ90-1FF-J (18:1): hip roll, hip pitch, and knee pitch.
+        "large_motors": DelayedPowerLimitedPDActuatorCfg(
             min_delay=BSRL_ACTUATOR_MIN_DELAY,
             max_delay=BSRL_ACTUATOR_MAX_DELAY,
             joint_names_expr=[
                 "joint_.*_hip_pitch",
                 "joint_.*_hip_roll",
-                "joint_.*_hip_yaw",
                 "joint_.*_knee_pitch",
             ],
-            effort_limit_sim=1000.0,
-            velocity_limit_sim=10.0,
+            effort_limit=BSRL_LARGE_MOTOR_PEAK_TORQUE,
+            effort_limit_sim=BSRL_LARGE_MOTOR_PEAK_TORQUE,
+            velocity_limit=BSRL_LARGE_MOTOR_PEAK_SPEED,
+            velocity_limit_sim=BSRL_LARGE_MOTOR_PEAK_SPEED,
+            peak_power=BSRL_LARGE_MOTOR_PEAK_POWER,
             armature=0.01,
             stiffness={
                 "joint_.*_hip_pitch": 100,
                 "joint_.*_hip_roll": 100,
-                "joint_.*_hip_yaw": 100,
                 "joint_.*_knee_pitch": 150,
             },
             damping={
                 "joint_.*_hip_pitch": 2,
                 "joint_.*_hip_roll": 2,
-                "joint_.*_hip_yaw": 2,
                 "joint_.*_knee_pitch": 4,
             },
         ),
-        "feet": DelayedImplicitActuatorCfg(
+        # SETZ70-1EB-J (16:1): hip yaw and both ankle axes.
+        "small_motors": DelayedPowerLimitedPDActuatorCfg(
             min_delay=BSRL_ACTUATOR_MIN_DELAY,
             max_delay=BSRL_ACTUATOR_MAX_DELAY,
             joint_names_expr=[
+                "joint_.*_hip_yaw",
                 "joint_.*_ankle_roll",
                 "joint_.*_ankle_pitch",
             ],
-            effort_limit_sim=1000.0,
-            velocity_limit_sim=10.0,
+            effort_limit=BSRL_SMALL_MOTOR_PEAK_TORQUE,
+            effort_limit_sim=BSRL_SMALL_MOTOR_PEAK_TORQUE,
+            velocity_limit=BSRL_SMALL_MOTOR_PEAK_SPEED,
+            velocity_limit_sim=BSRL_SMALL_MOTOR_PEAK_SPEED,
+            peak_power=BSRL_SMALL_MOTOR_PEAK_POWER,
             armature=0.01,
             stiffness={
+                "joint_.*_hip_yaw": 100,
                 "joint_.*_ankle_roll": 40,
                 "joint_.*_ankle_pitch": 40,
             },
             damping={
+                "joint_.*_hip_yaw": 2,
                 "joint_.*_ankle_roll": 2,
                 "joint_.*_ankle_pitch": 2,
             },

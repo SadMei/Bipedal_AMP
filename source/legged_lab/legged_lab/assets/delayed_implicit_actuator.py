@@ -3,7 +3,9 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import torch
-from isaaclab.actuators import ImplicitActuator, ImplicitActuatorCfg
+from dataclasses import MISSING
+
+from isaaclab.actuators import DelayedPDActuator, DelayedPDActuatorCfg, ImplicitActuator, ImplicitActuatorCfg
 from isaaclab.utils import DelayBuffer, configclass
 from isaaclab.utils.types import ArticulationActions
 
@@ -53,3 +55,47 @@ class DelayedImplicitActuatorCfg(ImplicitActuatorCfg):
 
     min_delay: int = 0
     max_delay: int = 0
+
+
+class DelayedPowerLimitedPDActuator(DelayedPDActuator):
+    """Delayed explicit PD actuator with joint-side torque, speed, and power limits."""
+
+    cfg: DelayedPowerLimitedPDActuatorCfg
+
+    def __init__(self, cfg: DelayedPowerLimitedPDActuatorCfg, *args, **kwargs):
+        super().__init__(cfg, *args, **kwargs)
+        if cfg.peak_power <= 0.0:
+            raise ValueError(f"peak_power must be positive, got {cfg.peak_power}")
+        self._peak_power = float(cfg.peak_power)
+        self._joint_vel = torch.zeros_like(self.computed_effort)
+
+    def compute(
+        self, control_action: ArticulationActions, joint_pos: torch.Tensor, joint_vel: torch.Tensor
+    ) -> ArticulationActions:
+        self._joint_vel[:] = joint_vel
+        return super().compute(control_action, joint_pos, joint_vel)
+
+    def _clip_effort(self, effort: torch.Tensor) -> torch.Tensor:
+        # The datasheet values are gearbox-output values. Peak torque and peak
+        # speed are not simultaneously available, so enforce the listed peak
+        # mechanical power in addition to both independent hard limits.
+        speed_abs = torch.abs(self._joint_vel)
+        power_effort = self._peak_power / torch.clamp(speed_abs, min=1.0e-6)
+        effort_magnitude = torch.minimum(self.effort_limit, power_effort)
+
+        min_effort = -effort_magnitude
+        max_effort = effort_magnitude
+        # Beyond the speed rating, allow braking torque but no torque that
+        # accelerates the joint farther outside its rated operating envelope.
+        max_effort = torch.where(self._joint_vel >= self.velocity_limit, 0.0, max_effort)
+        min_effort = torch.where(self._joint_vel <= -self.velocity_limit, 0.0, min_effort)
+        return torch.clamp(effort, min=min_effort, max=max_effort)
+
+
+@configclass
+class DelayedPowerLimitedPDActuatorCfg(DelayedPDActuatorCfg):
+    """Configuration for a delayed PD motor with a peak mechanical-power envelope."""
+
+    class_type: type = DelayedPowerLimitedPDActuator
+    peak_power: float = MISSING
+    """Peak joint-side mechanical output power in watts."""
