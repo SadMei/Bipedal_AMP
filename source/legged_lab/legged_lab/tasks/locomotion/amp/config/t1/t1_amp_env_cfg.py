@@ -10,6 +10,7 @@ import numpy as np
 import torch
 from isaaclab.assets import Articulation
 from isaaclab.envs import ManagerBasedRLEnv
+from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
@@ -55,6 +56,7 @@ def _motion_weights() -> dict[str, float]:
             "No T1 AMP reference motions were found. Upload .pkl files to "
             f"{T1_MOTION_DIR}; the required joint/key-body order is documented in that directory."
         )
+    weights = {}
     for file_name in files:
         path = os.path.join(T1_MOTION_DIR, file_name)
         motion = joblib.load(path)
@@ -82,7 +84,11 @@ def _motion_weights() -> dict[str, float]:
         quat_norm = np.linalg.norm(np.asarray(motion["root_rot"]), axis=1)
         if not np.allclose(quat_norm, 1.0, atol=1.0e-3):
             raise ValueError(f"{path}: root_rot contains non-unit quaternions")
-    return {os.path.splitext(file_name)[0]: 1.0 for file_name in files}
+        weights[os.path.splitext(file_name)[0]] = float(frame_count)
+    # Weight clips by frame count so every uploaded reference frame has the
+    # same sampling probability. Equal per-file weights over-sampled the many
+    # short turning clips and under-sampled the longer forward-walking clips.
+    return weights
 
 
 def joint_mechanical_power_abs(
@@ -195,14 +201,22 @@ class T1AmpRewardsCfg:
     """Velocity task rewards plus T1 penalties reused from wbt_est where applicable."""
 
     track_lin_vel_xy_exp = RewTerm(
-        func=mdp.track_lin_vel_xy_exp,
-        weight=1.0,
+        func=mdp.track_lin_vel_xy_base_frame_exp,
+        weight=3.0,
         params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
     )
     track_ang_vel_z_exp = RewTerm(
-        func=mdp.track_ang_vel_z_exp,
-        weight=1.0,
+        func=mdp.track_ang_vel_z_base_frame_exp,
+        weight=2.0,
         params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
+    )
+    # Keep a useful gradient when the exponential reward is near zero. This is
+    # essential while the policy is still learning to translate instead of
+    # settling into a high-style in-place gait.
+    lin_vel_xy_error_excess_l2 = RewTerm(
+        func=mdp.lin_vel_xy_base_frame_error_excess_l2,
+        weight=-1.0,
+        params={"command_name": "base_velocity", "threshold": 0.25, "max_excess": 2.0},
     )
     flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-1.0)
     lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=0.0)
@@ -269,11 +283,31 @@ class T1AmpRewardsCfg:
 
 
 @configclass
+class T1CurriculumCfg:
+    """Learn forward translation first, then expose the complete command set."""
+
+    velocity_range_and_tracking_std = CurrTerm(
+        func=mdp.velocity_range_and_tracking_std,
+        params={
+            "command_name": "base_velocity",
+            "reward_term_name": "track_lin_vel_xy_exp",
+            "steps_per_iteration": 24,
+            "phase_boundaries": (3000, 9000),
+            "lin_vel_x_ranges": ((-0.1, 0.6), (-0.5, 0.8), (-0.7, 1.1)),
+            "lin_vel_y_ranges": ((-0.15, 0.15), (-0.35, 0.35), (-0.55, 0.55)),
+            "ang_vel_z_ranges": ((-0.35, 0.35), (-1.0, 1.0), (-2.0, 2.0)),
+            "tracking_stds": (0.5, 0.4, 0.3),
+        },
+    )
+
+
+@configclass
 class T1AmpEnvCfg(LocomotionAmpEnvCfg):
     """Training configuration isolated from the existing G1 and BSRL tasks."""
 
     events: T1EventCfg = T1EventCfg()
     rewards: T1AmpRewardsCfg = T1AmpRewardsCfg()
+    curriculum: T1CurriculumCfg = T1CurriculumCfg()
 
     def __post_init__(self):
         super().__post_init__()
@@ -336,6 +370,7 @@ class T1AmpEnvCfgPlay(T1AmpEnvCfg):
         super().__post_init__()
 
         self.scene.num_envs = 1
+        self.curriculum.velocity_range_and_tracking_std = None
         self.observations.policy.enable_corruption = False
         for event_name in (
             "physics_material",

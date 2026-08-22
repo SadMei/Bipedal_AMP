@@ -62,7 +62,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--command_profile",
-    choices=("config", "mixed"),
+    choices=("config", "mixed", "t1_large"),
     default="config",
     help="Use commands from the environment config or a deterministic mixed-command sequence.",
 )
@@ -136,7 +136,6 @@ from isaaclab.envs import (
 )
 from isaaclab.utils.assets import retrieve_file_path
 from isaaclab.utils.dict import print_dict
-from isaaclab.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
 from isaaclab_rl.rsl_rl import (
     RslRlBaseRunnerCfg,
     RslRlVecEnvWrapper,
@@ -158,6 +157,14 @@ MIXED_COMMANDS = (
     (0.6, 0.0, 0.35),
     (0.3, -0.5, 0.0),
     (0.6, 0.0, -0.35),
+)
+T1_LARGE_COMMANDS = (
+    (1.5, 0.0, 0.0),
+    (2.0, 0.0, 0.0),
+    (2.5, 0.0, 0.0),
+    (1.5, 0.55, 0.0),
+    (1.2, 0.0, 1.5),
+    (1.2, 0.0, -1.5),
 )
 MIXED_PHASE_STEPS = 150
 
@@ -184,6 +191,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     log_root_path = os.path.abspath(log_root_path)
     print(f"[INFO] Loading experiment from directory: {log_root_path}")
     if args_cli.use_pretrained_checkpoint:
+        # This helper is not available in every Isaac Lab release. Import it
+        # only for the code path that actually needs a published checkpoint.
+        from isaaclab.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
+
         resume_path = get_published_pretrained_checkpoint("rsl_rl", train_task_name)
         if not resume_path:
             print("[INFO] Unfortunately a pre-trained checkpoint is currently unavailable for this task.")
@@ -198,10 +209,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # set the log directory for the environment (works for all environment types)
     env_cfg.log_dir = log_dir
 
-    if args_cli.command_profile == "mixed":
+    command_sequence = T1_LARGE_COMMANDS if args_cli.command_profile == "t1_large" else MIXED_COMMANDS
+    if args_cli.command_profile != "config":
         # Seed the first command before reset so the initial observation history is consistent.
         command_cfg = env_cfg.commands.base_velocity
-        initial_command = MIXED_COMMANDS[0]
+        initial_command = command_sequence[0]
         command_cfg.resampling_time_range = (1.0e9, 1.0e9)
         command_cfg.ranges.lin_vel_x = (initial_command[0], initial_command[0])
         command_cfg.ranges.lin_vel_y = (initial_command[1], initial_command[1])
@@ -287,7 +299,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     camera_focus = robot.data.root_pos_w[0, :2].detach().clone() if follow_camera else None
     command_term = (
         sim_env.command_manager.get_term("base_velocity")
-        if args_cli.debug_state or args_cli.command_profile == "mixed"
+        if args_cli.debug_state or args_cli.command_profile != "config"
         else None
     )
     mixed_phase = 0
@@ -352,15 +364,15 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 reset_requested = False
                 timestep = 0
                 mixed_phase = 0
-                if args_cli.command_profile == "mixed":
-                    initial_command = MIXED_COMMANDS[0]
+                if args_cli.command_profile != "config":
+                    initial_command = command_sequence[0]
                     command_term.cfg.ranges.lin_vel_x = (initial_command[0], initial_command[0])
                     command_term.cfg.ranges.lin_vel_y = (initial_command[1], initial_command[1])
                     command_term.cfg.ranges.ang_vel_z = (initial_command[2], initial_command[2])
                 obs, _ = env.reset()
                 policy_nn.reset(torch.ones(env.num_envs, dtype=torch.bool, device=env.unwrapped.device))
-                if args_cli.command_profile == "mixed":
-                    command_term.command[:] = command_term.command.new_tensor(MIXED_COMMANDS[0])
+                if args_cli.command_profile != "config":
+                    command_term.command[:] = command_term.command.new_tensor(command_sequence[0])
                 if follow_camera:
                     camera_focus.copy_(robot.data.root_pos_w[0, :2])
                 print("[INFO] Robot reset to the nominal default state.")
@@ -373,12 +385,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 )
             # agent stepping
             actions = policy(obs)
-            if args_cli.command_profile == "mixed":
+            if args_cli.command_profile != "config":
                 # Queue the next phase before env.step builds the observation used by the next action.
-                next_phase = min((timestep + 1) // MIXED_PHASE_STEPS, len(MIXED_COMMANDS) - 1)
+                next_phase = min((timestep + 1) // MIXED_PHASE_STEPS, len(command_sequence) - 1)
                 if next_phase != mixed_phase:
                     mixed_phase = next_phase
-                    next_command = MIXED_COMMANDS[mixed_phase]
+                    next_command = command_sequence[mixed_phase]
                     command_term.cfg.ranges.lin_vel_x = (next_command[0], next_command[0])
                     command_term.cfg.ranges.lin_vel_y = (next_command[1], next_command[1])
                     command_term.cfg.ranges.ang_vel_z = (next_command[2], next_command[2])

@@ -59,7 +59,10 @@ class T1RslRlOnPolicyRunnerAmpCfg(RslRlOnPolicyRunnerCfg):
                 hidden_dims=[1024, 512],
                 activation="elu",
                 style_reward_scale=5.0,
-                task_style_lerp=0.4,
+                # WBT is driven entirely by task/reference rewards. Keep AMP
+                # style regularization, but give command tracking the majority
+                # of the combined reward so an in-place gait is not optimal.
+                task_style_lerp=0.7,
             ),
             loss_type="LSGAN",
         ),
