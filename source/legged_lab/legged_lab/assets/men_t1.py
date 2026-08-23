@@ -1,5 +1,7 @@
 """Men T1 (0722 new-shoe) articulation used by the AMP tasks."""
 
+import xml.etree.ElementTree as ET
+
 import isaaclab.sim as sim_utils
 from isaaclab.assets.articulation import ArticulationCfg
 
@@ -220,3 +222,32 @@ T1_ACTION_SCALE = {
     for actuator in T1_CFG.actuators.values()
     for joint_pattern in actuator.joint_names_expr
 }
+
+
+def _build_action_clip(urdf_path: str, joint_names: tuple[str, ...], margin_fraction: float = 0.05):
+    """Build position-target limits from the same URDF used by the simulator.
+
+    ``JointPositionActionCfg.clip`` is applied after action scaling and the
+    default-position offset, so these values are joint positions in radians.
+    Keeping a small margin prevents a stochastic policy from commanding the
+    mechanical stop while retaining essentially all reference poses.
+    """
+    urdf_limits = {}
+    for joint in ET.parse(urdf_path).getroot().findall("joint"):
+        limit = joint.find("limit")
+        if limit is not None and "lower" in limit.attrib and "upper" in limit.attrib:
+            urdf_limits[joint.attrib["name"]] = (float(limit.attrib["lower"]), float(limit.attrib["upper"]))
+
+    missing = [name for name in joint_names if name not in urdf_limits]
+    if missing:
+        raise ValueError(f"{urdf_path}: missing position limits for T1 joints {missing}")
+
+    action_clip = {}
+    for name in joint_names:
+        lower, upper = urdf_limits[name]
+        margin = margin_fraction * (upper - lower)
+        action_clip[name] = (lower + margin, upper - margin)
+    return action_clip
+
+
+T1_ACTION_CLIP = _build_action_clip(T1_URDF_PATH, T1_JOINT_NAMES)

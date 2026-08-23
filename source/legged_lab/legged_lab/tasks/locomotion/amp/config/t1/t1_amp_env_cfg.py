@@ -12,13 +12,14 @@ from isaaclab.assets import Articulation
 from isaaclab.envs import ManagerBasedRLEnv
 from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.managers import EventTermCfg as EventTerm
+from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
 
 from legged_lab import LEGGED_LAB_ROOT_DIR
-from legged_lab.assets.men_t1 import T1_ACTION_SCALE, T1_CFG, T1_JOINT_NAMES
-from legged_lab.tasks.locomotion.amp.amp_env_cfg import LocomotionAmpEnvCfg
+from legged_lab.assets.men_t1 import T1_ACTION_CLIP, T1_ACTION_SCALE, T1_CFG, T1_JOINT_NAMES
+from legged_lab.tasks.locomotion.amp.amp_env_cfg import LocomotionAmpEnvCfg, ObservationsCfg
 import legged_lab.tasks.locomotion.amp.mdp as mdp
 
 
@@ -197,17 +198,39 @@ class T1EventCfg:
 
 
 @configclass
+class T1ObservationsCfg(ObservationsCfg):
+    """T1 AMP observations, including translational motion in the style signal."""
+
+    @configclass
+    class DiscriminatorCfg(ObservationsCfg.DiscriminatorCfg):
+        # The base AMP configuration omits linear velocity. Without it, an
+        # in-place gait is indistinguishable from a translating reference.
+        base_lin_vel = ObsTerm(func=mdp.base_lin_vel)
+
+    disc: DiscriminatorCfg = DiscriminatorCfg()
+
+    @configclass
+    class DiscriminatorDemoCfg(ObservationsCfg.DiscriminatorDemoCfg):
+        ref_root_lin_vel_b = ObsTerm(
+            func=mdp.ref_root_lin_vel_b,
+            params={"animation": ANIMATION_TERM_NAME, "flatten_steps_dim": False},
+        )
+
+    disc_demo: DiscriminatorDemoCfg = DiscriminatorDemoCfg()
+
+
+@configclass
 class T1AmpRewardsCfg:
     """Velocity task rewards plus T1 penalties reused from wbt_est where applicable."""
 
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_base_frame_exp,
-        weight=3.0,
+        weight=2.0,
         params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
     )
     track_ang_vel_z_exp = RewTerm(
         func=mdp.track_ang_vel_z_base_frame_exp,
-        weight=2.0,
+        weight=1.0,
         params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
     )
     # Keep a useful gradient when the exponential reward is near zero. This is
@@ -215,7 +238,7 @@ class T1AmpRewardsCfg:
     # settling into a high-style in-place gait.
     lin_vel_xy_error_excess_l2 = RewTerm(
         func=mdp.lin_vel_xy_base_frame_error_excess_l2,
-        weight=-1.0,
+        weight=-0.25,
         params={"command_name": "base_velocity", "threshold": 0.25, "max_excess": 2.0},
     )
     flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-1.0)
@@ -296,7 +319,7 @@ class T1CurriculumCfg:
             "lin_vel_x_ranges": ((-0.1, 0.6), (-0.5, 0.8), (-0.7, 1.1)),
             "lin_vel_y_ranges": ((-0.15, 0.15), (-0.35, 0.35), (-0.55, 0.55)),
             "ang_vel_z_ranges": ((-0.35, 0.35), (-1.0, 1.0), (-2.0, 2.0)),
-            "tracking_stds": (0.5, 0.4, 0.3),
+            "tracking_stds": (0.4, 0.3, 0.25),
         },
     )
 
@@ -306,6 +329,7 @@ class T1AmpEnvCfg(LocomotionAmpEnvCfg):
     """Training configuration isolated from the existing G1 and BSRL tasks."""
 
     events: T1EventCfg = T1EventCfg()
+    observations: T1ObservationsCfg = T1ObservationsCfg()
     rewards: T1AmpRewardsCfg = T1AmpRewardsCfg()
     curriculum: T1CurriculumCfg = T1CurriculumCfg()
 
@@ -317,6 +341,7 @@ class T1AmpEnvCfg(LocomotionAmpEnvCfg):
         self.episode_length_s = 10.0
 
         self.actions.joint_pos.scale = T1_ACTION_SCALE
+        self.actions.joint_pos.clip = T1_ACTION_CLIP
         self.actions.joint_pos.joint_names = list(T1_JOINT_NAMES)
         self.actions.joint_pos.preserve_order = True
 

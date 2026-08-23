@@ -150,6 +150,28 @@ def _check_randomization(env) -> None:
             raise RuntimeError(f"actuator {actuator_name} has an invalid command delay")
 
 
+def _check_action_target_clip(env) -> None:
+    """Verify extreme policy outputs cannot command a T1 mechanical stop."""
+    robot = env.scene["robot"]
+    action_term = env.action_manager.get_term("joint_pos")
+    joint_ids, _ = robot.find_joints(list(T1_JOINT_NAMES), preserve_order=True)
+    extreme_actions = torch.empty(
+        env.num_envs, env.action_manager.total_action_dim, device=env.device
+    ).uniform_(-100.0, 100.0)
+    action_term.process_actions(extreme_actions)
+    targets = action_term.processed_actions
+    hard_limits = robot.data.joint_pos_limits[:, joint_ids]
+    lower_margin = targets - hard_limits[..., 0]
+    upper_margin = hard_limits[..., 1] - targets
+    if torch.any(lower_margin <= 0.0) or torch.any(upper_margin <= 0.0):
+        raise RuntimeError("processed T1 position target reached or exceeded a hard joint limit")
+    print(
+        f"[action_clip] target_min_margin_rad={torch.minimum(lower_margin, upper_margin).min().item():.6g} "
+        f"outside_hard={int(((targets < hard_limits[..., 0]) | (targets > hard_limits[..., 1])).sum())}"
+    )
+    action_term.reset()
+
+
 def _rollout_rewards_and_interval_event(env) -> None:
     reward_values: dict[str, list[torch.Tensor]] = defaultdict(list)
     terminated_count = 0
@@ -198,6 +220,7 @@ def main() -> None:
         _check_motion_and_fk(env)
         env.reset()
         _check_randomization(env)
+        _check_action_target_clip(env)
         _rollout_rewards_and_interval_event(env)
         print("[diagnostic] PASS")
     finally:

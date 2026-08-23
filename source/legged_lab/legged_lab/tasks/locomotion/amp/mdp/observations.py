@@ -54,3 +54,19 @@ def ref_root_local_rot_tan_norm(
         return obs.reshape(num_envs, -1)
     else:
         return obs
+
+
+def ref_root_lin_vel_b(
+    env: ManagerBasedAnimationEnv,
+    animation: str,
+    flatten_steps_dim: bool = True,
+) -> torch.Tensor:
+    """Reference root linear velocity expressed in the reference body frame."""
+    animation_term: AnimationTerm = env.animation_manager.get_term(animation)
+    ref_root_vel_w = animation_term.get_root_vel_w()
+    ref_root_quat = animation_term.get_root_quat()
+    ref_root_vel_b = math_utils.quat_apply_inverse(ref_root_quat, ref_root_vel_w)
+
+    if flatten_steps_dim:
+        return ref_root_vel_b.reshape(env.num_envs, -1)
+    return ref_root_vel_b

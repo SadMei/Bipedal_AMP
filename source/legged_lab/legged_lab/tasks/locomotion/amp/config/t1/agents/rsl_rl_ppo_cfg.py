@@ -33,7 +33,7 @@ class T1RslRlOnPolicyRunnerAmpCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        entropy_coef=0.01,
+        entropy_coef=0.005,
         num_learning_epochs=5,
         # 8192 environments produce 196608 transitions per rollout. Splitting
         # those into 16 batches keeps AMP's create-graph gradient penalty below
@@ -59,10 +59,10 @@ class T1RslRlOnPolicyRunnerAmpCfg(RslRlOnPolicyRunnerCfg):
                 hidden_dims=[1024, 512],
                 activation="elu",
                 style_reward_scale=5.0,
-                # WBT is driven entirely by task/reference rewards. Keep AMP
-                # style regularization, but give command tracking the majority
-                # of the combined reward so an in-place gait is not optimal.
-                task_style_lerp=0.7,
+                # Keep style dominant. Translational reference velocity is now
+                # part of the discriminator, so task reward need not overpower
+                # AMP merely to prevent an in-place gait.
+                task_style_lerp=0.4,
             ),
             loss_type="LSGAN",
         ),
