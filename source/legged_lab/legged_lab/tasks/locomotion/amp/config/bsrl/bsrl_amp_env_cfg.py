@@ -599,3 +599,24 @@ class BSRLAmpEnvCfgPlay(BSRLAmpEnvCfg):
         self.commands.base_velocity.heading_command = False
         self.commands.base_velocity.rel_heading_envs = 0.0
         self.commands.base_velocity.rel_standing_envs = 0.0
+
+
+@configclass
+class BSRLAmpEnvCfgNoActorFeet(BSRLAmpEnvCfg):
+    """BSRL training variant without foot forward-kinematics observations in the actor."""
+
+    def __post_init__(self):
+        super().__post_init__()
+
+        # Keep foot positions available to the privileged critic and AMP
+        # discriminator, but remove them from the deployable policy input.
+        self.observations.policy.key_body_pos_b = None
+
+
+@configclass
+class BSRLAmpEnvCfgNoActorFeetPlay(BSRLAmpEnvCfgPlay):
+    """Deterministic playback for the no-actor-foot-observation policy."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.observations.policy.key_body_pos_b = None

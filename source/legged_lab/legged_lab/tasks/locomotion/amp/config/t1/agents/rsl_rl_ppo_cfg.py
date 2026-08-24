@@ -58,7 +58,7 @@ class T1RslRlOnPolicyRunnerAmpCfg(RslRlOnPolicyRunnerCfg):
             amp_discriminator=RslRlAmpCfg.AMPDiscriminatorCfg(
                 hidden_dims=[1024, 512],
                 activation="elu",
-                style_reward_scale=5.0,
+                style_reward_scale=5.5,
                 # Keep style dominant. Translational reference velocity is now
                 # part of the discriminator, so task reward need not overpower
                 # AMP merely to prevent an in-place gait.
@@ -68,3 +68,13 @@ class T1RslRlOnPolicyRunnerAmpCfg(RslRlOnPolicyRunnerCfg):
         ),
         symmetry_cfg=None,
     )
+
+
+@configclass
+class T1AlignedBaselineRslRlOnPolicyRunnerAmpCfg(T1RslRlOnPolicyRunnerAmpCfg):
+    """Keep the aligned baseline run separate from the tuned T1 experiment."""
+
+    experiment_name = "men_t1_amp_aligned_baseline"
+
+    def __post_init__(self):
+        self.algorithm.amp_cfg.amp_discriminator.style_reward_scale = 5.0

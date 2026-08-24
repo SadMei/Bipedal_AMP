@@ -60,3 +60,11 @@ class BSRLRslRlOnPolicyRunnerAmpCfg(RslRlOnPolicyRunnerCfg):
         ),
         symmetry_cfg=None,
     )
+
+
+@configclass
+class BSRLNoActorFeetRslRlOnPolicyRunnerAmpCfg(BSRLRslRlOnPolicyRunnerAmpCfg):
+    """Store the no-actor-foot-observation experiment in an isolated log tree."""
+
+    max_iterations = 30000
+    experiment_name = "bsrl_amp_no_actor_feet"

@@ -315,11 +315,11 @@ class T1CurriculumCfg:
             "command_name": "base_velocity",
             "reward_term_name": "track_lin_vel_xy_exp",
             "steps_per_iteration": 24,
-            "phase_boundaries": (3000, 9000),
+            "phase_boundaries": (5000, 12000),
             "lin_vel_x_ranges": ((-0.1, 0.6), (-0.5, 0.8), (-0.7, 1.1)),
             "lin_vel_y_ranges": ((-0.15, 0.15), (-0.35, 0.35), (-0.55, 0.55)),
             "ang_vel_z_ranges": ((-0.35, 0.35), (-1.0, 1.0), (-2.0, 2.0)),
-            "tracking_stds": (0.4, 0.3, 0.25),
+            "tracking_stds": (0.4, 0.4, 0.4),
         },
     )
 
@@ -385,6 +385,18 @@ class T1AmpEnvCfg(LocomotionAmpEnvCfg):
         self.terminations.base_contact.params["sensor_cfg"].body_names = [BASE_BODY_NAME]
         self.terminations.base_height.params["minimum_height"] = 0.5
         self.terminations.bad_orientation.params["limit_angle"] = math.radians(60.0)
+
+
+@configclass
+class T1AmpEnvCfgAlignedBaseline(T1AmpEnvCfg):
+    """Aligned T1 comparison run using the pre-tuning curriculum settings."""
+
+    def __post_init__(self):
+        super().__post_init__()
+
+        curriculum_params = self.curriculum.velocity_range_and_tracking_std.params
+        curriculum_params["phase_boundaries"] = (3000, 9000)
+        curriculum_params["tracking_stds"] = (0.4, 0.3, 0.25)
 
 
 @configclass
