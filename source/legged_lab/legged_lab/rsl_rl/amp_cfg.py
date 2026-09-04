@@ -26,6 +26,18 @@ class RslRlAmpCfg:
     disc_max_grad_norm: float = 1.0
     """Maximum gradient norm for the discriminator networks"""
 
+    save_best_style_checkpoint: bool = False
+    """Whether the AMP runner should retain the checkpoint with the best rolling style reward."""
+
+    best_style_warmup_iterations: int = 250
+    """Iterations to wait after startup/resume before selecting the best style checkpoint."""
+
+    best_style_save_interval: int = 100
+    """Interval, in iterations, at which to evaluate the rolling style reward for saving."""
+
+    best_style_min_delta: float = 0.01
+    """Minimum rolling-style improvement required to replace the best checkpoint."""
+
     @configclass
     class AMPDiscriminatorCfg:
         """Configuration for the AMP discriminator network."""

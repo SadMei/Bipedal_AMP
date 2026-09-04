@@ -4,7 +4,7 @@ import torch
 from typing import TYPE_CHECKING
 
 from isaaclab.envs import mdp
-from isaaclab.managers import SceneEntityCfg
+from isaaclab.managers import ManagerTermBase, RewardTermCfg, SceneEntityCfg
 from isaaclab.sensors import ContactSensor
 from isaaclab.assets import RigidObject
 import isaaclab.utils.math as math_utils
@@ -77,3 +77,98 @@ def lin_vel_xy_yaw_frame_error_excess_l2(
 ) -> torch.Tensor:
     """Backward-compatible name for base-frame excess velocity error."""
     return lin_vel_xy_base_frame_error_excess_l2(env, command_name, threshold, max_excess, asset_cfg)
+
+
+def zero_yaw_initial_heading_lin_vel_xy_exp(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    std: float,
+    command_threshold: float = 1.0e-3,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Track XY velocity in the episode-initial yaw frame for straight commands.
+
+    ``StraightMixtureVelocityCommand.heading_target`` is initialized from the
+    robot heading after every reset and remains unchanged when the commanded yaw
+    rate is exactly zero.  Rotating world velocity into that frame prevents a
+    policy from preserving its forward reward by slowly turning its body.  The
+    term is disabled for turning commands, which continue to use base-frame
+    velocity tracking.
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+    command = env.command_manager.get_command(command_name)
+    command_term = env.command_manager.get_term(command_name)
+    if not hasattr(command_term, "heading_target"):
+        raise AttributeError(f"Command term {command_name!r} does not expose an episode heading target.")
+
+    target_yaw = command_term.heading_target
+    zeros = torch.zeros_like(target_yaw)
+    target_yaw_quat_w = math_utils.quat_from_euler_xyz(zeros, zeros, target_yaw)
+    lin_vel_initial_heading = math_utils.quat_apply_inverse(target_yaw_quat_w, asset.data.root_lin_vel_w)
+    lin_vel_error = torch.sum(torch.square(command[:, :2] - lin_vel_initial_heading[:, :2]), dim=1)
+    zero_turn = torch.abs(command[:, 2]) < command_threshold
+    return torch.exp(-lin_vel_error / std**2) * zero_turn
+
+
+def zero_command_yaw_rate_l2(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    command_threshold: float = 0.1,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize yaw rate strongly when the requested yaw rate is near zero."""
+    asset: RigidObject = env.scene[asset_cfg.name]
+    yaw_command = env.command_manager.get_command(command_name)[:, 2]
+    zero_turn = torch.abs(yaw_command) < command_threshold
+    return torch.square(asset.data.root_ang_vel_b[:, 2]) * zero_turn
+
+
+class zero_command_heading_hold_exp(ManagerTermBase):
+    """Reward holding the episode's initial world heading for zero-turn commands.
+
+    The target is captured after every environment reset, including reference-
+    motion resets.  It therefore does not assume that all reference clips start
+    at world yaw zero.
+    """
+
+    def __init__(self, env: ManagerBasedRLEnv, cfg: RewardTermCfg):
+        super().__init__(cfg, env)
+        asset_cfg = cfg.params.get("asset_cfg", SceneEntityCfg("robot"))
+        asset: RigidObject = env.scene[asset_cfg.name]
+        self.target_yaw = math_utils.euler_xyz_from_quat(asset.data.root_quat_w)[2].clone()
+
+    def reset(self, env_ids):
+        asset_cfg = self.cfg.params.get("asset_cfg", SceneEntityCfg("robot"))
+        asset: RigidObject = self._env.scene[asset_cfg.name]
+        yaw = math_utils.euler_xyz_from_quat(asset.data.root_quat_w[env_ids])[2]
+        self.target_yaw[env_ids] = yaw
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        command_name: str,
+        std: float,
+        command_threshold: float = 0.1,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    ) -> torch.Tensor:
+        asset: RigidObject = env.scene[asset_cfg.name]
+        yaw = math_utils.euler_xyz_from_quat(asset.data.root_quat_w)[2]
+        heading_error = math_utils.wrap_to_pi(yaw - self.target_yaw)
+        yaw_command = env.command_manager.get_command(command_name)[:, 2]
+        zero_turn = torch.abs(yaw_command) < command_threshold
+        return torch.exp(-torch.square(heading_error) / std**2) * zero_turn
+
+
+def integrated_heading_tracking_exp(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    std: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Reward tracking the heading obtained by integrating the yaw-rate command."""
+    asset: RigidObject = env.scene[asset_cfg.name]
+    command_term = env.command_manager.get_term(command_name)
+    if not hasattr(command_term, "heading_target"):
+        raise AttributeError(f"Command term {command_name!r} does not expose an integrated heading target.")
+    heading_error = math_utils.wrap_to_pi(asset.data.heading_w - command_term.heading_target)
+    return torch.exp(-torch.square(heading_error) / std**2)

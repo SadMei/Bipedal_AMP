@@ -29,6 +29,18 @@ class AnimationTermCfg:
     random_fetch: bool = False
     """Whether to randomly fetch the motion data at each step."""
 
+    command_name: str | None = None
+    """Velocity command used to select a matching motion category, if enabled."""
+
+    command_motion_patterns: dict[str, tuple[str, ...]] | None = None
+    """Glob patterns for forward/backward/lateral/turning motion categories."""
+
+    command_component_scales: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    """Expected maximum absolute x, y, and yaw commands used to compare dominant components."""
+
+    match_command_speed: bool = False
+    """Whether to choose the closest-speed clip inside the selected command category."""
+
     enable_visualization: bool = True
     """Whether to enable visualization for this animation term."""
 

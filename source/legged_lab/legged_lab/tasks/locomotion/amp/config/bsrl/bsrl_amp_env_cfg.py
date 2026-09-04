@@ -25,6 +25,7 @@ from legged_lab.assets.bsrl_conventions import (
     validate_bsrl_joint_positions,
 )
 import legged_lab.tasks.locomotion.amp.mdp as amp_mdp
+from legged_lab.state_est import observations as state_est_obs
 
 LEGGED_LAB_ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", ".."))
 
@@ -126,14 +127,9 @@ class BSRLObservationsCfg:
         )
         # 上一个控制周期输出的动作。
         actions = ObsTerm(func=amp_mdp.last_action)
-        # 左右脚相对基座的位置，用于描述下肢姿态。
-        key_body_pos_b = ObsTerm(
-            func=amp_mdp.key_body_pos_b,
-            params={
-                "asset_cfg": SceneEntityCfg("robot", body_names=KEY_BODY_NAMES, preserve_order=True),
-            },
-            noise=Unoise(n_min=-0.08, n_max=0.08),
-        )
+        # Best-performing BSRL run omitted foot FK positions from the deployable actor.
+        # The critic and AMP discriminator retain the same privileged key-body state.
+        key_body_pos_b = None
 
         def __post_init__(self):
             # 保存最近 5 个控制周期，并对策略观测启用噪声。
@@ -178,6 +174,92 @@ class BSRLObservationsCfg:
             self.concatenate_terms = True
 
     critic: CriticCfg = CriticCfg()
+
+    @configclass
+    class StateEstCriticCfg(ObsGroup):
+        """Simulator-only estimator targets appended to the critic history."""
+
+        # The regular critic already contains the true base linear velocity.
+        # Base height completes the estimator's 4-D supervision target.
+        base_height = ObsTerm(
+            func=state_est_obs.base_height,
+            params={"asset_cfg": SceneEntityCfg("robot")},
+        )
+        # The former 8-D estimator privileges are intentionally disabled:
+        # foot_contact = ObsTerm(func=state_est_obs.foot_contact, ...)
+        # foot_height_w = ObsTerm(func=state_est_obs.foot_height_w, ...)
+
+        def __post_init__(self):
+            self.history_length = 5
+            self.enable_corruption = False
+            self.concatenate_terms = True
+
+    # Base height is required by the critic even without an actor estimator:
+    # it drives the base-height termination and its -200 termination penalty.
+    state_est_critic: StateEstCriticCfg = StateEstCriticCfg()
+
+    @configclass
+    class RewardPrivilegedCfg(ObsGroup):
+        """Simulator-only state needed to evaluate contact-dependent returns."""
+
+        foot_contact = ObsTerm(
+            func=state_est_obs.foot_contact,
+            params={
+                "sensor_cfg": SceneEntityCfg("contact_forces", body_names=FOOT_NAMES, preserve_order=True),
+                "force_threshold": 1.0,
+            },
+        )
+        foot_mode_time = ObsTerm(
+            func=state_est_obs.foot_mode_time,
+            params={
+                "sensor_cfg": SceneEntityCfg("contact_forces", body_names=FOOT_NAMES, preserve_order=True),
+                "max_time": 0.4,
+            },
+        )
+        foot_lin_vel_w_xy = ObsTerm(
+            func=state_est_obs.body_lin_vel_w_xy,
+            params={"asset_cfg": SceneEntityCfg("robot", body_names=FOOT_NAMES, preserve_order=True)},
+        )
+        undesired_contact_count = ObsTerm(
+            func=state_est_obs.contact_violation_count,
+            params={
+                "sensor_cfg": SceneEntityCfg(
+                    "contact_forces", body_names=[f"^(?!.*{FOOT_REGEX}).*"]
+                ),
+                "force_threshold": 1.0,
+            },
+        )
+        base_contact = ObsTerm(
+            func=state_est_obs.contact_violation_count,
+            params={
+                "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[BASE_LINK_NAME]),
+                "force_threshold": 1.0,
+            },
+        )
+
+        def __post_init__(self):
+            self.history_length = 5
+            self.enable_corruption = False
+            self.concatenate_terms = True
+
+    reward_privileged: RewardPrivilegedCfg = RewardPrivilegedCfg()
+
+    @configclass
+    class StateEstLabelCfg(ObsGroup):
+        """Current-frame 4-D ground truth used only for estimator supervision."""
+
+        label = ObsTerm(
+            func=state_est_obs.state_estimator_label,
+            params={"asset_cfg": SceneEntityCfg("robot")},
+        )
+
+        def __post_init__(self):
+            self.enable_corruption = False
+            self.concatenate_terms = True
+
+    # Estimator comparison: set by enable_state_estimator() when --use_estimator is passed.
+    # state_est_label: StateEstLabelCfg = StateEstLabelCfg()
+    state_est_label: StateEstLabelCfg | None = None
 
     @configclass
     class DiscriminatorCfg(ObsGroup):
@@ -442,6 +524,11 @@ class BSRLAmpEnvCfg(LocomotionAmpEnvCfg):
         self.commands.base_velocity.ranges.lin_vel_y = (-0.8, 0.8)
         self.commands.base_velocity.ranges.ang_vel_z = (-0.5, 0.5)
         self.commands.base_velocity.rel_standing_envs = 0.02
+        # Match deployment's direct (vx, vy, wz) interface instead of replacing
+        # wz with a closed-loop world-heading command during training.
+        self.commands.base_velocity.heading_command = False
+        self.commands.base_velocity.rel_heading_envs = 0.0
+        self.commands.base_velocity.ranges.heading = None
 
         # 任务奖励：保持现有 PPO 任务奖励和 AMP 风格奖励组合不变。
         self.rewards.track_lin_vel_xy_exp.weight = 3.0
@@ -552,71 +639,3 @@ class BSRLAmpEnvCfg(LocomotionAmpEnvCfg):
         # 基座明显下沉时提前结束，避免机器人跪下后继续收集无效轨迹。
         self.terminations.base_height.params["minimum_height"] = 0.5
         self.terminations.base_contact.params["sensor_cfg"].body_names = [BASE_LINK_NAME]
-
-
-@configclass
-class BSRLAmpEnvCfgPlay(BSRLAmpEnvCfg):
-    """单环境展示配置，不影响 BSRLAmpEnvCfg 的训练指令随机性。"""
-
-    def __post_init__(self):
-        super().__post_init__()
-
-        # 播放时使用标称动力学，避免把训练期域随机化误当成策略性能。
-        self.curriculum.velocity_range_and_tracking_std = None
-        self.observations.policy.enable_corruption = False
-        self.events.physics_material = None
-        self.events.add_base_mass = None
-        self.events.randomize_foot_rigid_body_material = None
-        self.events.base_external_force_torque = None
-        self.events.push_robot = None
-        # 训练期随机化在播放时全部关闭。
-        self.events.add_joint_default_pos = None
-        self.events.base_com = None
-        self.events.actuator_gains = None
-        self.events.body_mass = None
-        self.events.joint_params = None
-        self.events.joint_friction = None
-
-        # 播放首次启动及每次 episode 复位时，都恢复 CFG 中的默认根状态、关节位置和 PD 目标。
-        self.events.reset_from_ref = None
-        self.events.reset_to_default = EventTerm(
-            func=il_mdp.reset_scene_to_default,
-            mode="reset",
-            params={"reset_joint_targets": True},
-        )
-
-        # 播放时关闭随机 actuator 延迟，保证不同 checkpoint 的视频可直接比较。
-        for actuator_cfg in self.scene.robot.actuators.values():
-            actuator_cfg.min_delay = 0
-            actuator_cfg.max_delay = 0
-
-        # 展示时固定为 1.0 m/s 前进，不采样横向和转向指令。
-        self.scene.num_envs = 1
-        self.commands.base_velocity.ranges.lin_vel_x = (1.0, 1.0)
-        self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
-        self.commands.base_velocity.ranges.ang_vel_z = (0.0, 0.0)
-        self.commands.base_velocity.ranges.heading = None
-        self.commands.base_velocity.heading_command = False
-        self.commands.base_velocity.rel_heading_envs = 0.0
-        self.commands.base_velocity.rel_standing_envs = 0.0
-
-
-@configclass
-class BSRLAmpEnvCfgNoActorFeet(BSRLAmpEnvCfg):
-    """BSRL training variant without foot forward-kinematics observations in the actor."""
-
-    def __post_init__(self):
-        super().__post_init__()
-
-        # Keep foot positions available to the privileged critic and AMP
-        # discriminator, but remove them from the deployable policy input.
-        self.observations.policy.key_body_pos_b = None
-
-
-@configclass
-class BSRLAmpEnvCfgNoActorFeetPlay(BSRLAmpEnvCfgPlay):
-    """Deterministic playback for the no-actor-foot-observation policy."""
-
-    def __post_init__(self):
-        super().__post_init__()
-        self.observations.policy.key_body_pos_b = None

@@ -72,7 +72,39 @@
 - **步频复核**：从左右膝峰值粗略估计，走路每条腿约 `1.5 Hz`、跑步每条腿约 `2.3 Hz`，对应总落脚节奏约 `3.0/4.6 step/s`。**结论**：参考数据并不缺高步频，当前低频大步更可能来自宽指令、长单支撑奖励、参考动作大关节幅度以及鲁棒性随机化的共同偏置。
 - **稳定行走新一轮训练启动**：正式 run 为 `2026-08-18_22-21-04_stable_walk_gmr_regularized_airtime05_massscale_commands12_delay04_8192_30k`，使用 `8192 env / 30000` 轮、每 `1000` 轮保存 checkpoint。已确认进入 PPO 循环并生成 TensorBoard 事件及 `model_0.pt`；第 20 轮吞吐约 `7.9 万 step/s`，课程处于第一阶段。启动前处理了当前 IsaacLab `2.3.1`/Isaac Sim `5.1` 安装缺少版本函数以及失效本地代理阻断默认地面 USD 下载的问题，未修改 IsaacLab 底层库。
 
-## 当前有效训练配置（2026-08-18）
+### 2026-08-28
+
+- **当前最佳 BSRL run**：`2026-08-28_01-43-09_no_actor_feet_noheading_estimator_criticpriv8_formal1_8192`，完成 `30000` 轮并生成 `model_29999.pt`。
+- Actor 移除左右足端基座系 FK 位置；Critic 与 AMP 判别器仍保留足端关键点，避免把仿真可得但部署不方便的足端位置直接交给策略。
+- `heading_command=False`、`rel_heading_envs=0`，训练和部署都直接使用 `vx/vy/yaw_rate`，不再用随机世界航向替换 yaw-rate 指令。
+- 默认启用 8 维 Estimator：基座高度、基座系线速度、双脚接触概率和双脚世界高度；Critic 同时获得对应真值特权观测。
+- 最终 iteration：episode length `1000/1000`、time-out `99.29%`、XY 速度误差 `0.284 m/s`、yaw 误差 `0.426 rad/s`、style reward `0.290`、Estimator loss `0.0130`。
+- **结论**：相较直接把足端 FK 交给 Actor 的版本，该配置播放与部署表现更好，因此后续 BSRL 主任务以此为基准。
+
+### 2026-08-31：任务和日志收敛
+
+- BSRL 只保留 `LeggedLab-Isaac-AMP-BSRL-v0` 一个注册任务；NoActorFeet 与 Play 变体均并入主配置或由 `play.py --nominal_eval` 处理。
+- 所有 BSRL run 已统一移动到 `logs/rsl_rl/bsrl_amp/`，agent 的 `experiment_name` 固定为 `bsrl_amp`。
+- 后续奖励、观测或超参数调整不再注册新任务：直接修改主配置并用唯一 `run_name` 开新一轮；差异写入本文和 run 自带的 `params/*.yaml`。
+
+### 2026-09-01：Estimator 缩减为 4D
+
+- BSRL 与 T1 共用的 Estimator 输出由 8 维缩减为 4 维，只保留 `base_height(1) + base_lin_vel_b(3)`；足接触和足部世界高度的观测函数保留在代码中，但不再作为 Estimator 标签、Actor 输入或 Critic 特权。
+- 原因：AMP 不做逐帧相位跟踪，足接触标签离散且容易在触地边界闪烁，足高又能由本体状态近似推导；旧训练中接触损失长期占主要比例，可能诱发落脚抖动。
+- 新 BSRL 正式 run：`2026-09-01_11-19-28_lafan1_newurdf_estimator4d_formal1_8192`，从头训练 `8192 env × 30000` 轮；tmux 为 `bsrl_lafan1_newurdf_estimator4d_formal1`，使用物理 GPU 0。
+- 实际 `model_0.pt` 权重合同已核对：Estimator 输出层 `(4,128)`、Actor 首层 `(512,244)`、Critic首层 `(512,290)`。第 148 轮 Estimator loss `0.0046`（高度 `0.0001`、线速度 `0.0045`），AMP 判别器 loss `0.1732`，episode length `603/1000`；无 NaN、OOM 或维度错误，正式训练继续运行。
+- 不带 Estimator 的对照 run `2026-08-31_21-52-19_lafan1_newurdf_noestimator_formal1_8192` 仍在物理 GPU 1 运行；第 24355 轮 episode length `982/1000`、time-out `97.87%`、XY/yaw 误差 `0.326/0.470`，两组训练互不覆盖。
+
+### 2026-09-01：提高腿部 PD 的对照实验
+
+- 保留此前名义 PD 作为对照：hip pitch/roll/yaw `100/2`、knee pitch `150/4`、ankle roll/pitch `40/2`。
+- 新名义 PD：hip pitch `150/3`、hip roll `100/2`、hip yaw `100/2`、knee pitch `200/4`、ankle roll/pitch `100/3`。
+- Kp/Kd 启动随机化仍为各自独立乘以 `0.8～1.2`；armature、力矩/速度/功率限制及 `0～4` 物理步控制延迟均保持不变。
+- 本轮只改变上述 PD，不停止此前训练；使用主任务和 4D Estimator。正式 run：`2026-09-01_17-34-09_pd_hip150_knee200_ankle100_estimator4d_formal1_8192`，`8192 env × 30000` 轮，tmux：`bsrl_pd_hip150_knee200_ankle100_estimator4d_formal1`，物理 GPU 3。
+- 后续实验遵循并行对照原则：除非用户明确要求终止，否则新实验不得停止仍在运行的旧训练。
+- 新增不带 Estimator 的单变量对照：保持新 PD、URDF、奖励、随机化、AMP/PPO 参数和训练规模全部一致，仅移除 4D Estimator 及其 Actor 估计输入；此前带 Estimator 的新 PD 训练继续运行。正式 run：`2026-09-02_11-10-01_pd_hip150_knee200_ankle100_noestimator_formal1_8192`，`8192 env × 30000` 轮，tmux：`bsrl_pd_hip150_knee200_ankle100_noestimator_formal1`，物理 GPU 0。
+
+## 历史有效训练配置（2026-08-18）
 
 ### 仿真与控制
 
@@ -116,7 +148,67 @@
 - 训练 `100%` 从 walk/run 参考动作随机帧复位；播放则从默认静止姿态复位，并关闭随机化和 actuator 延迟。
 - 终止：20 秒超时、base 接触、base 高度低于 `0.5 m`、机身倾斜超过 `60 deg`。
 
+## 当前主配置（2026-09-01）
+
+- 当前正式 run：`rewardpriv_estimator4d_formal1_8192`，2026-09-01 15:52 重启，8192 env、30000 轮、带 4D Estimator；Critic 奖励特权补齐后的第一轮。
+- 原 `lafan1_newurdf_estimator4d_formal1_8192` 已从 `model_7000.pt` 恢复到独立 GPU，继续跑至总计 30000 轮；不带 Estimator 的同名对照已完成 30000 轮。
+- BSRL 资产改为直接加载 `data/Robots/BSRL_urdf/urdf/export.urdf`，Isaac Lab 启动时生成缓存 USD；仓库内旧 USD 不再是训练资产源，也不需要随 URDF 改动单独维护。
+- 当前硬限位：左右 hip roll 均为 `[-0.3, 0.3] rad`，左右 knee pitch 均为 `[-0.1, 2.2] rad`。结合 `soft_joint_pos_limit_factor=0.9`，运行时软限位分别为 `[-0.27, 0.27]` 和 `[0.015, 2.085] rad`。
+- 环境、控制、奖励、随机化和课程沿用上述 8 月 18 日稳定行走配置，但 `heading_command` 已关闭，yaw-rate 指令不再被随机目标航向替换。
+- Actor 不包含左右足端 FK：每帧 `48` 维、5 帧共 `240` 维；Estimator 预测 4 维后，Actor MLP 实际输入 `244` 维。
+- Critic 主观测每帧 `57` 维、5 帧共 `285` 维；其中已经包含真值基座线速度。基座高度特权为 `5` 维，奖励相关接触特权为 `60` 维，Critic MLP 实际输入 `350` 维；这些特权无论 Actor 是否启用 Estimator 都保留。
+- AMP 判别器仍使用根姿态 6D、基座角速度、12 关节位置/速度和左右足端关键点，单帧 `39` 维、4 帧共 `156` 维。
+- BSRL 基准默认保持普通 ActorCritic；同一个任务加 `--use_estimator` 时启用 4D Estimator、`state_est_label` 和 `state_est_critic`。不为这项对照注册新任务，也不切换日志根目录。
+- PPO 默认 `30000` 轮，entropy `0.01`、学习率 `1e-4` adaptive；AMP style scale `5.0`、task/style `0.4/0.6`。
+- 唯一日志根目录为 `logs/rsl_rl/bsrl_amp/`，唯一任务为 `LeggedLab-Isaac-AMP-BSRL-v0`。
+
+### 当前各模块观测表
+
+| 模块 | 当前输入 | 历史与维度 | 备注 |
+|---|---|---:|---|
+| Policy / Estimator 输入 | base 角速度 `3`、root 旋转 6D `6`、速度指令 `3`、12 关节位置 `12`、关节速度 `12`、上一动作 `12` | `48 × 5 = 240` | 有训练噪声；Actor 不含左右足端 FK，也不直接观察 base 线速度 |
+| Estimator 输出 | base 高度 `1`、base-frame 线速度 `3` | 当前帧 `4` | MLP `[256,128]`；监督损失系数 `1.0`，Actor 梯度不反传到 Estimator |
+| Actor MLP | Policy 历史 `240` + Estimator 预测 `4` | `244` | `[512,256,128]` ELU |
+| Critic 主观测 | Policy 的无噪声版本 + base 线速度 `3` + 左右足相对 base 位置 `6` | `57 × 5 = 285` | 不使用 Estimator 预测值 |
+| Critic 高度特权 | base 高度 `1` | `1 × 5 = 5` | 覆盖 base-height termination；base 线速度真值已在主观测中 |
+| Critic 奖励特权 | 双足接触 `2`、双足 air/contact time `2+2`、双足世界系 XY 速度 `4`、非足部接触计数 `1`、base 接触标志 `1` | `12 × 5 = 60` | 覆盖 feet air-time、feet slide、undesired contact 与 base-contact termination；Critic 总输入 `350` |
+| AMP agent 判别器 | root 旋转 6D `6`、base 角速度 `3`、关节位置/速度 `12+12`、左右足相对 base 位置 `6` | `39 × 4 = 156` | 不含 base 线速度和速度指令 |
+| AMP demo 判别器 | 参考 root 旋转、角速度、关节位置/速度和左右足关键点 | `39 × 4 = 156` | 与 agent 侧严格同维同序 |
+
+### 当前奖励表
+
+| 奖励项 | 权重 | 当前含义/参数 |
+|---|---:|---|
+| `track_lin_vel_xy_exp` | `+3.0` | base-frame XY 速度跟踪；std 按课程为 `0.5 → 0.4 → 0.3` |
+| `track_ang_vel_z_exp` | `+2.0` | base-frame yaw-rate 跟踪，std `0.5` |
+| `lin_vel_xy_error_excess_l2` | `-1.0` | XY 误差超过 `0.25 m/s` 后平方惩罚，excess 上限 `2.0 m/s` |
+| `ang_vel_xy_l2` / `flat_orientation_l2` | `-0.1 / -0.2` | 抑制 roll/pitch 角速度与机身倾斜 |
+| `dof_torques_l2` / `dof_acc_l2` | `-1.5e-7 / -1.25e-7` | 力矩和关节加速度正则 |
+| `action_rate_l2` / `dof_pos_limits` | `-0.005 / -0.5` | 动作平滑与关节限位惩罚 |
+| `feet_air_time` | `+0.5` | 双足正向 air-time，阈值 `0.4 s` |
+| `feet_slide` / `undesired_contacts` | `-0.6 / -0.1` | 足底滑动与非足部接触惩罚 |
+| `joint_deviation_hip_l1` | `-0.2` | hip yaw/roll 偏离默认姿态 |
+| `termination_penalty` | `-200` | 非超时终止惩罚 |
+| 当前关闭项 | `0` | `lin_vel_z`、base 高度、body 线加速度、关节速度/速度限位、接触力、全关节默认姿态偏差 |
+| AMP style reward | scale `5.0` | LSGAN；最终 task/style 混合比例 `0.4/0.6` |
+
+### 当前训练参数表
+
+| 类别 | 当前值 |
+|---|---|
+| 环境与控制 | 直接加载 `export.urdf`；hip roll 硬限位 `±0.3 rad`，knee 硬限位 `[-0.1,2.2] rad`；`8192 env`；物理 `200 Hz`（`dt=0.005`）；策略 `50 Hz`（decimation `4`）；episode `20 s`；12 维位置动作，scale `0.25`；执行器延迟 `0–4` 物理步 |
+| 指令与课程 | 每 `10 s` 重采样，`2%` 站立，`heading_command=False`；第 `0/5000/12000` 轮切换速度范围：`vx ±0.6/0.9/1.2`、`vy ±0.4/0.6/0.8`、yaw `±0.25/0.375/0.5` |
+| 参考动作 | `walk_and_run` 中的 PKL 按文件等权采样；AMP 使用连续 `4` 帧 |
+| Rollout 与保存 | 每环境每轮 `24` 步；默认 `30000` 轮；每 `1000` 轮保存；日志根 `bsrl_amp` |
+| PPO | epochs `5`、mini-batches `4`、LR `1e-4 adaptive`、clip `0.2`、gamma `0.99`、lambda `0.95`、desired KL `0.01`、max grad norm `1.0`、entropy `0.01` |
+| 网络 | Actor/Critic `[512,256,128]` ELU；初始动作 std `1.0`；普通基准关闭观测归一化；使用 `--use_estimator` 时启用 `[256,128]` ELU Estimator，并在其输入侧使用运行均值/方差归一化 |
+| AMP | 判别器 `[1024,512]` ELU；LR `1e-4`；replay buffer `100`；gradient penalty `10`；trunk/linear weight decay `1e-4/1e-2`；LSGAN |
+| 随机化 | 材料摩擦 `0.8–1.2`、质量/惯量、Kp/Kd、armature 均 `×0.8–1.2`；零位 `±0.05 rad`；COM x `±0.025 m`、y/z `±0.05 m`；关节摩擦 `0–0.05`；每 `5 s` 推动 base XY 速度 `±0.2 m/s` |
+| Reset / 终止 | 从参考动作随机帧复位；20 秒超时、base 接触、base 高度 `<0.5 m` 或倾角 `>60°` 终止 |
+
 ## 当前问题与风险
+
+- **已修正：Critic 缺少奖励所需状态。** 2026-09-01 起，base height、双足接触/计时/世界系 XY 速度、非足部接触计数和 base 接触标志只作为 Critic 特权输入；Actor 与 4D Estimator 合同不变。
 
 - **已修正：GMR 参考动作风格污染**。IK 已加入默认姿态、hip yaw/roll 和 root-frame 足宽正则，全量数据的足宽及贴髋限位比例显著下降；本轮训练将验证这种数据修正能否转化为更紧凑的策略步态。
 - **已修正：air-time 奖励曾偏向长单支撑**。`feet_air_time_positive_biped` 在单支撑期间按持续时间给分，它并不是步频奖励；现已从权重 `1.0`、阈值 `0.5 s` 改为宇树 AMP 的 `0.5`、`0.4 s`。
@@ -124,7 +216,7 @@
 - **待观察：横向指令仍可能放大支撑宽度**。最终范围已收窄到 `vy=±0.8 m/s`、`vx=±1.2 m/s`，但横向速度仍占前向上限的三分之二且均匀采样；本轮需要用足宽统计判断它是否仍会鼓励宽支撑和跨步。
 - **已修正：base 复合质量随机化**。base `-1～+3 kg` 加法事件已关闭，当前只保留全身质量及惯量 `×0.8～1.2`。
 - **中优先级：高方差和宽松目标仍是控制风险**。最终策略 std 约 `3.35`，乘 `0.25` scale 后单关节探索标准差约 `0.84 rad`，远大于 hip roll 等关节行程；虽然确定性部署不直接采样该噪声，但训练时容易反复撞限位，并削弱 AMP 风格学习。
-- **低优先级：默认训练轮数与实验名不一致**。agent cfg 的 `max_iterations=20000`；只有命令行显式传 `--max_iterations 30000` 才会训练 30000 轮，漏传时会静默回到 20000 轮。
+- **已修正：默认训练轮数与实验名不一致**。agent cfg 现默认 `max_iterations=30000`、`experiment_name=bsrl_amp`。
 - **已排除：延迟首步零目标**。IsaacLab `DelayBuffer` 在 reset 后第一次 append 会用当前目标填满该环境的历史槽，不会先输出若干步全零 PD 目标。
 - **已排除：当前速度坐标系、足部 link 与左右顺序错误**。这些链路目前一致；30 Hz 参考动作会按时间插值到 50 Hz 控制时刻，不是直接丢帧，虽然重新生成 50 Hz 数据仍有利于验证速度和步频细节。
 

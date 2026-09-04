@@ -1,4 +1,4 @@
-"""Men T1 (0722 new-shoe) articulation used by the AMP tasks."""
+"""Men T1 0809 new-shoe articulation used by the AMP task."""
 
 import xml.etree.ElementTree as ET
 
@@ -9,8 +9,8 @@ from legged_lab import LEGGED_LAB_ROOT_DIR
 from legged_lab.assets.delayed_implicit_actuator import DelayedImplicitActuatorCfg
 
 
-T1_ASSET_ROOT = f"{LEGGED_LAB_ROOT_DIR}/data/Robots/Men_T1_0722_new_shoe"
-T1_URDF_PATH = f"{T1_ASSET_ROOT}/urdf/men_t1_path_25dofs_collision_feet_points.urdf"
+T1_ASSET_ROOT = f"{LEGGED_LAB_ROOT_DIR}/data/Robots/Men_T1_0809_new_shoe"
+T1_URDF_PATH = f"{T1_ASSET_ROOT}/urdf/men_t1_path_25dofs_collision.urdf"
 
 # This order is the policy and AMP-reference contract inherited from wbt_est.
 T1_JOINT_NAMES = (

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import enum
+import fnmatch
 import os
 import torch
 from prettytable import PrettyTable
@@ -42,6 +43,7 @@ class MotionDataTerm(ManagerTermBase):
             raise ValueError(f"No motion data files with .pkl extension found in {self.cfg.motion_data_dir}.")
 
         self.motion_weights_dict = self.cfg.motion_data_weights
+        self.motion_names = list(self.motion_weights_dict)
 
         self.motion_durations = []
         self.motion_fps = []
@@ -49,6 +51,8 @@ class MotionDataTerm(ManagerTermBase):
         self.motion_num_frames = []
         self.motion_weights = []
         self.motion_loop_modes = []
+        self.motion_mean_root_vel_b = []
+        self.motion_mean_root_ang_vel_b = []
 
         self.root_pos_w = []
         self.root_quat = []
@@ -108,6 +112,14 @@ class MotionDataTerm(ManagerTermBase):
             root_ang_vel_w = ang_vel_from_quat_diff(root_quat, dt, in_frame="world")
             root_ang_vel_w.requires_grad_(False)
 
+            # Per-clip representative velocities are used by command-conditioned
+            # AMP sampling.  Compute them from the motion itself rather than from
+            # file names so converted datasets remain self-describing.
+            root_vel_b = math_utils.quat_apply_inverse(root_quat, root_vel_w)
+            root_ang_vel_b = math_utils.quat_apply_inverse(root_quat, root_ang_vel_w)
+            self.motion_mean_root_vel_b.append(torch.mean(root_vel_b, dim=0))
+            self.motion_mean_root_ang_vel_b.append(torch.mean(root_ang_vel_b, dim=0))
+
             # dof position, shape (num_frames, num_dofs)
             dof_pos = torch.from_numpy(motion_raw_data["dof_pos"]).to(self.device).float()
             dof_pos.requires_grad_(False)
@@ -133,6 +145,8 @@ class MotionDataTerm(ManagerTermBase):
         self.motion_durations = torch.tensor(self.motion_durations, dtype=torch.float32, device=self.device)
         self.motion_num_frames = torch.tensor(self.motion_num_frames, dtype=torch.int32, device=self.device)
         self.motion_loop_modes = torch.tensor(self.motion_loop_modes, dtype=torch.int32, device=self.device)
+        self.motion_mean_root_vel_b = torch.stack(self.motion_mean_root_vel_b, dim=0)
+        self.motion_mean_root_ang_vel_b = torch.stack(self.motion_mean_root_ang_vel_b, dim=0)
         # Get the normalized motion weights
         self.motion_weights = torch.tensor(self.motion_weights, dtype=torch.float32, device=self.device)
         self.motion_weights = self.motion_weights / torch.sum(self.motion_weights)
@@ -202,6 +216,23 @@ class MotionDataTerm(ManagerTermBase):
         """
         motion_ids = torch.multinomial(self.motion_weights, num_samples=n, replacement=True)
         return motion_ids
+
+    def motion_ids_matching(self, patterns: tuple[str, ...] | list[str]) -> torch.Tensor:
+        """Return IDs whose configured motion names match at least one glob pattern."""
+        matching_ids = [
+            motion_id
+            for motion_id, motion_name in enumerate(self.motion_names)
+            if any(fnmatch.fnmatchcase(motion_name, pattern) for pattern in patterns)
+        ]
+        if not matching_ids:
+            raise ValueError(f"No loaded motions match patterns {patterns}. Available motions: {self.motion_names}")
+        return torch.tensor(matching_ids, dtype=torch.long, device=self.device)
+
+    def sample_motion_ids(self, candidate_ids: torch.Tensor, n: int) -> torch.Tensor:
+        """Sample motion IDs from a subset while retaining configured frame weights."""
+        candidate_weights = self.motion_weights[candidate_ids]
+        local_ids = torch.multinomial(candidate_weights, num_samples=n, replacement=True)
+        return candidate_ids[local_ids]
 
     def sample_times(
         self, motion_ids: torch.Tensor, truncate_time_start: float = None, truncate_time_end: float = None

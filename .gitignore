@@ -22,8 +22,7 @@
 # Keep deployment exports while excluding checkpoints and all other run data.
 **/logs/**
 !**/logs/**/
-!logs/rsl_rl/bsrl_amp/2026-08-22_16-36-36_motor_limits_formal1_8192/exported/policy.onnx
-!logs/rsl_rl/bsrl_amp_no_actor_feet/2026-08-24_00-16-13_no_actor_feet_formal1_8192/exported/policy.onnx
+!**/logs/**/*.onnx
 **/recordings/*
 **/output/*
 **/outputs/*

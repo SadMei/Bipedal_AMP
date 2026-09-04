@@ -4,14 +4,11 @@ import math
 import os
 from dataclasses import MISSING
 
-import isaaclab.envs.mdp as il_mdp
 import joblib
 import numpy as np
-import torch
-from isaaclab.assets import Articulation
-from isaaclab.envs import ManagerBasedRLEnv
 from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.managers import EventTermCfg as EventTerm
+from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
@@ -19,7 +16,8 @@ from isaaclab.utils import configclass
 
 from legged_lab import LEGGED_LAB_ROOT_DIR
 from legged_lab.assets.men_t1 import T1_ACTION_CLIP, T1_ACTION_SCALE, T1_CFG, T1_JOINT_NAMES
-from legged_lab.tasks.locomotion.amp.amp_env_cfg import LocomotionAmpEnvCfg, ObservationsCfg
+from legged_lab.state_est import observations as state_est_obs
+from legged_lab.tasks.locomotion.amp.amp_env_cfg import CommandsCfg, LocomotionAmpEnvCfg, ObservationsCfg
 import legged_lab.tasks.locomotion.amp.mdp as mdp
 
 
@@ -47,6 +45,31 @@ PUSH_VELOCITY_RANGE = {
     "pitch": (-0.5, 0.5),
     "yaw": (-0.5, 0.5),
 }
+
+
+@configclass
+class T1CommandsCfg(CommandsCfg):
+    """T1 commands with persistent coverage of straight forward walking."""
+
+    base_velocity = mdp.StraightMixtureVelocityCommandCfg(
+        asset_name="robot",
+        resampling_time_range=(10.0, 10.0),
+        rel_standing_envs=0.0,
+        rel_heading_envs=0.0,
+        heading_command=False,
+        heading_control_stiffness=0.5,
+        debug_vis=True,
+        straight_command_probability=0.5,
+        straight_lin_vel_x_range=(0.2, 0.8),
+        single_axis_commands=False,
+        motion_speed_animation=None,
+        ranges=mdp.StraightMixtureVelocityCommandCfg.Ranges(
+            lin_vel_x=(-0.1, 0.1),
+            lin_vel_y=(-0.1, 0.1),
+            ang_vel_z=(-0.1, 0.1),
+            heading=None,
+        ),
+    )
 
 
 def _motion_weights() -> dict[str, float]:
@@ -90,18 +113,6 @@ def _motion_weights() -> dict[str, float]:
     # same sampling probability. Equal per-file weights over-sampled the many
     # short turning clips and under-sampled the longer forward-walking clips.
     return weights
-
-
-def joint_mechanical_power_abs(
-    env: ManagerBasedRLEnv,
-    asset_cfg: SceneEntityCfg,
-) -> torch.Tensor:
-    """Sum absolute mechanical power over selected joints."""
-    asset: Articulation = env.scene[asset_cfg.name]
-    return torch.sum(
-        torch.abs(asset.data.applied_torque[:, asset_cfg.joint_ids] * asset.data.joint_vel[:, asset_cfg.joint_ids]),
-        dim=1,
-    )
 
 
 @configclass
@@ -202,10 +213,122 @@ class T1ObservationsCfg(ObservationsCfg):
     """T1 AMP observations, including translational motion in the style signal."""
 
     @configclass
+    class PolicyCfg(ObservationsCfg.PolicyCfg):
+        # Actor ablation: key-body positions remain privileged critic inputs and
+        # part of the AMP discriminator, but are not exposed to the deployed policy.
+        key_body_pos_b = None
+        # Deployment ablation: the actor no longer requires a world-yaw estimate
+        # or a stateful integral of the commanded yaw rate.  Keep the original
+        # definition here for future comparisons; the critic remains unchanged.
+        heading_error = ObsTerm(
+            func=mdp.integrated_heading_error,
+            params={"command_name": "base_velocity"},
+        )
+
+    policy: PolicyCfg = PolicyCfg()
+
+    @configclass
+    class CriticCfg(ObservationsCfg.CriticCfg):
+        heading_error = ObsTerm(
+            func=mdp.integrated_heading_error,
+            params={"command_name": "base_velocity"},
+        )
+
+    critic: CriticCfg = CriticCfg()
+
+    @configclass
+    class StateEstCriticCfg(ObsGroup):
+        """Missing privileged targets appended only to estimator critics."""
+
+        # The base critic already provides base_lin_vel_b(3). This group adds
+        # the remaining value from the estimator's 4-D supervision target.
+        base_height = ObsTerm(
+            func=state_est_obs.base_height,
+            params={"asset_cfg": SceneEntityCfg("robot")},
+        )
+        # The former 8-D estimator privileges are intentionally disabled:
+        # foot_contact = ObsTerm(func=state_est_obs.foot_contact, ...)
+        # foot_height_w = ObsTerm(func=state_est_obs.foot_height_w, ...)
+
+        def __post_init__(self):
+            self.history_length = 5
+            self.enable_corruption = False
+            self.concatenate_terms = True
+
+    state_est_critic: StateEstCriticCfg = StateEstCriticCfg()
+
+    @configclass
+    class RewardPrivilegedCfg(ObsGroup):
+        """Simulator-only state needed to make contact rewards Markov for the critic."""
+
+        foot_contact = ObsTerm(
+            func=state_est_obs.foot_contact,
+            params={
+                "sensor_cfg": SceneEntityCfg(
+                    "contact_forces", body_names=list(FOOT_BODY_NAMES), preserve_order=True
+                ),
+                "force_threshold": 1.0,
+            },
+        )
+        # T1 currently has no feet_air_time reward, so unlike BSRL it does not
+        # need current_air_time/current_contact_time in its critic.
+        # foot_mode_time = ObsTerm(...)
+        foot_lin_vel_w_xy = ObsTerm(
+            func=state_est_obs.body_lin_vel_w_xy,
+            params={
+                "asset_cfg": SceneEntityCfg("robot", body_names=list(FOOT_BODY_NAMES), preserve_order=True)
+            },
+        )
+        undesired_contact_count = ObsTerm(
+            func=state_est_obs.contact_violation_count,
+            params={
+                "sensor_cfg": SceneEntityCfg(
+                    "contact_forces",
+                    body_names=[
+                        r"^(?!left_ankle_pitch_Link$)(?!right_ankle_pitch_Link$)"
+                        r"(?!left_wrist_roll_Link$)(?!right_wrist_roll_Link$)"
+                        r"(?!left_wrist_pitch_Link$)(?!right_wrist_pitch_Link$).+$"
+                    ],
+                ),
+                "force_threshold": 1.0,
+            },
+        )
+        base_contact = ObsTerm(
+            func=state_est_obs.contact_violation_count,
+            params={
+                "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[BASE_BODY_NAME]),
+                "force_threshold": 1.0,
+            },
+        )
+
+        def __post_init__(self):
+            self.history_length = 5
+            self.enable_corruption = False
+            self.concatenate_terms = True
+
+    reward_privileged: RewardPrivilegedCfg = RewardPrivilegedCfg()
+
+    @configclass
+    class StateEstLabelCfg(ObsGroup):
+        """Simulator-only supervision for the deployable state estimator."""
+
+        label = ObsTerm(
+            func=state_est_obs.state_estimator_label,
+            params={"asset_cfg": SceneEntityCfg("robot")},
+        )
+
+        def __post_init__(self):
+            self.enable_corruption = False
+            self.concatenate_terms = True
+
+    state_est_label: StateEstLabelCfg = StateEstLabelCfg()
+
+    @configclass
     class DiscriminatorCfg(ObservationsCfg.DiscriminatorCfg):
         # The base AMP configuration omits linear velocity. Without it, an
         # in-place gait is indistinguishable from a translating reference.
         base_lin_vel = ObsTerm(func=mdp.base_lin_vel)
+        velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
 
     disc: DiscriminatorCfg = DiscriminatorCfg()
 
@@ -214,6 +337,10 @@ class T1ObservationsCfg(ObservationsCfg):
         ref_root_lin_vel_b = ObsTerm(
             func=mdp.ref_root_lin_vel_b,
             params={"animation": ANIMATION_TERM_NAME, "flatten_steps_dim": False},
+        )
+        ref_velocity_commands = ObsTerm(
+            func=mdp.ref_velocity_commands,
+            params={"animation": ANIMATION_TERM_NAME, "command_name": "base_velocity"},
         )
 
     disc_demo: DiscriminatorDemoCfg = DiscriminatorDemoCfg()
@@ -225,14 +352,34 @@ class T1AmpRewardsCfg:
 
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_base_frame_exp,
-        weight=2.0,
+        weight=3.0,
         params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
+    )
+    zero_yaw_initial_heading_lin_vel_xy_exp = RewTerm(
+        func=mdp.zero_yaw_initial_heading_lin_vel_xy_exp,
+        weight=1.0,
+        params={"command_name": "base_velocity", "std": 0.4, "command_threshold": 1.0e-3},
     )
     track_ang_vel_z_exp = RewTerm(
         func=mdp.track_ang_vel_z_base_frame_exp,
         weight=1.0,
         params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
     )
+    # Disabled for future runs: this zero-command penalty did not materially
+    # improve straight walking and can over-constrain natural yaw corrections.
+    # zero_command_yaw_rate_l2 = RewTerm(
+    #     func=mdp.zero_command_yaw_rate_l2,
+    #     weight=-2.0,
+    #     params={"command_name": "base_velocity", "command_threshold": 0.1},
+    # )
+    # Disabled for future runs: the integrated heading target was not accurate
+    # enough in practice and could reward corrections toward a drifting target.
+    # Keep the term here for traceability instead of deleting it.
+    # zero_command_heading_hold_exp = RewTerm(
+    #     func=mdp.integrated_heading_tracking_exp,
+    #     weight=0.5,
+    #     params={"command_name": "base_velocity", "std": 0.15},
+    # )
     # Keep a useful gradient when the exponential reward is near zero. This is
     # essential while the policy is still learning to translate instead of
     # settling into a high-style in-place gait.
@@ -254,15 +401,6 @@ class T1AmpRewardsCfg:
         func=mdp.joint_pos_limits,
         weight=-1.0,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=list(T1_JOINT_NAMES), preserve_order=True)},
-    )
-    feet_air_time = RewTerm(
-        func=mdp.feet_air_time_positive_biped,
-        weight=0.5,
-        params={
-            "command_name": "base_velocity",
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=list(FOOT_BODY_NAMES), preserve_order=True),
-            "threshold": 0.4,
-        },
     )
     feet_slide = RewTerm(
         func=mdp.feet_slide,
@@ -287,27 +425,12 @@ class T1AmpRewardsCfg:
             "threshold": 1.0,
         },
     )
-    arm_energy = RewTerm(
-        func=joint_mechanical_power_abs,
-        weight=-1.0e-5,
-        params={
-            "asset_cfg": SceneEntityCfg(
-                "robot",
-                joint_names=[
-                    ".*_shoulder_pitch_joint",
-                    ".*_shoulder_roll_joint",
-                    ".*_shoulder_yaw_joint",
-                    ".*_elbow_joint",
-                ],
-            )
-        },
-    )
     termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)
 
 
 @configclass
 class T1CurriculumCfg:
-    """Learn forward translation first, then expose the complete command set."""
+    """Use a long forward-only warm-up before exposing the complete command set."""
 
     velocity_range_and_tracking_std = CurrTerm(
         func=mdp.velocity_range_and_tracking_std,
@@ -315,10 +438,10 @@ class T1CurriculumCfg:
             "command_name": "base_velocity",
             "reward_term_name": "track_lin_vel_xy_exp",
             "steps_per_iteration": 24,
-            "phase_boundaries": (5000, 12000),
-            "lin_vel_x_ranges": ((-0.1, 0.6), (-0.5, 0.8), (-0.7, 1.1)),
-            "lin_vel_y_ranges": ((-0.15, 0.15), (-0.35, 0.35), (-0.55, 0.55)),
-            "ang_vel_z_ranges": ((-0.35, 0.35), (-1.0, 1.0), (-2.0, 2.0)),
+            "phase_boundaries": (8000, 16000),
+            "lin_vel_x_ranges": ((0.2, 0.6), (-0.55, 0.6), (-0.7, 0.8)),
+            "lin_vel_y_ranges": ((0.0, 0.0), (-0.45, 0.35), (-0.6, 0.5)),
+            "ang_vel_z_ranges": ((0.0, 0.0), (-1.15, 1.2), (-2.05, 1.9)),
             "tracking_stds": (0.4, 0.4, 0.4),
         },
     )
@@ -326,9 +449,10 @@ class T1CurriculumCfg:
 
 @configclass
 class T1AmpEnvCfg(LocomotionAmpEnvCfg):
-    """Training configuration isolated from the existing G1 and BSRL tasks."""
+    """Primary T1 AMP task: command-matched references and integrated heading."""
 
     events: T1EventCfg = T1EventCfg()
+    commands: T1CommandsCfg = T1CommandsCfg()
     observations: T1ObservationsCfg = T1ObservationsCfg()
     rewards: T1AmpRewardsCfg = T1AmpRewardsCfg()
     curriculum: T1CurriculumCfg = T1CurriculumCfg()
@@ -348,6 +472,16 @@ class T1AmpEnvCfg(LocomotionAmpEnvCfg):
         self.motion_data.motion_dataset.motion_data_dir = T1_MOTION_DIR
         self.motion_data.motion_dataset.motion_data_weights = _motion_weights()
         self.animation.animation.num_steps_to_use = AMP_NUM_STEPS
+        self.animation.animation.command_name = "base_velocity"
+        self.animation.animation.command_motion_patterns = {
+            "forward": ("model_walk*",),
+            "backward": ("walk_back*",),
+            "lateral_left": ("lateral_left*",),
+            "lateral_right": ("lateral_right*",),
+            "rotate_left": ("rotate_left*",),
+            "rotate_right": ("rotate_right*",),
+        }
+        self.animation.animation.command_component_scales = (0.8, 0.6, 2.05)
 
         joint_cfg = SceneEntityCfg("robot", joint_names=list(T1_JOINT_NAMES), preserve_order=True)
         key_body_cfg = SceneEntityCfg("robot", body_names=list(T1_KEY_BODY_NAMES), preserve_order=True)
@@ -355,7 +489,8 @@ class T1AmpEnvCfg(LocomotionAmpEnvCfg):
             group = getattr(self.observations, group_name)
             group.joint_pos.params = {"asset_cfg": joint_cfg}
             group.joint_vel.params = {"asset_cfg": joint_cfg}
-            group.key_body_pos_b.params = {"asset_cfg": key_body_cfg}
+            if group.key_body_pos_b is not None:
+                group.key_body_pos_b.params = {"asset_cfg": key_body_cfg}
 
         self.observations.disc.history_length = AMP_NUM_STEPS
         self.terminal_obs_groups = ("disc",)
@@ -381,61 +516,13 @@ class T1AmpEnvCfg(LocomotionAmpEnvCfg):
         self.commands.base_velocity.ranges.lin_vel_y = (-0.55, 0.55)
         self.commands.base_velocity.ranges.ang_vel_z = (-2.0, 2.0)
         self.commands.base_velocity.ranges.heading = (-math.pi, math.pi)
+        # Deployment commands yaw rate directly.  Do not silently replace the
+        # sampled yaw-rate command with a closed-loop world-heading target.
+        self.commands.base_velocity.heading_command = False
+        self.commands.base_velocity.rel_heading_envs = 0.0
+        # There is no standing clip in the current T1 AMP reference set.
+        self.commands.base_velocity.rel_standing_envs = 0.0
 
         self.terminations.base_contact.params["sensor_cfg"].body_names = [BASE_BODY_NAME]
         self.terminations.base_height.params["minimum_height"] = 0.5
         self.terminations.bad_orientation.params["limit_angle"] = math.radians(60.0)
-
-
-@configclass
-class T1AmpEnvCfgAlignedBaseline(T1AmpEnvCfg):
-    """Aligned T1 comparison run using the pre-tuning curriculum settings."""
-
-    def __post_init__(self):
-        super().__post_init__()
-
-        curriculum_params = self.curriculum.velocity_range_and_tracking_std.params
-        curriculum_params["phase_boundaries"] = (3000, 9000)
-        curriculum_params["tracking_stds"] = (0.4, 0.3, 0.25)
-
-
-@configclass
-class T1AmpEnvCfgPlay(T1AmpEnvCfg):
-    """Deterministic single-environment T1 playback configuration."""
-
-    def __post_init__(self):
-        super().__post_init__()
-
-        self.scene.num_envs = 1
-        self.curriculum.velocity_range_and_tracking_std = None
-        self.observations.policy.enable_corruption = False
-        for event_name in (
-            "physics_material",
-            "add_joint_default_pos",
-            "base_com",
-            "actuator_gains",
-            "body_mass",
-            "joint_params",
-            "joint_friction",
-            "base_external_force_torque",
-            "push_robot",
-        ):
-            setattr(self.events, event_name, None)
-
-        self.events.reset_from_ref = None
-        self.events.reset_to_default = EventTerm(
-            func=il_mdp.reset_scene_to_default,
-            mode="reset",
-            params={"reset_joint_targets": True},
-        )
-        for actuator_cfg in self.scene.robot.actuators.values():
-            actuator_cfg.min_delay = 0
-            actuator_cfg.max_delay = 0
-
-        self.commands.base_velocity.ranges.lin_vel_x = (1.0, 1.0)
-        self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
-        self.commands.base_velocity.ranges.ang_vel_z = (0.0, 0.0)
-        self.commands.base_velocity.ranges.heading = None
-        self.commands.base_velocity.heading_command = False
-        self.commands.base_velocity.rel_heading_envs = 0.0
-        self.commands.base_velocity.rel_standing_envs = 0.0

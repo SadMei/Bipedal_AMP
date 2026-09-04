@@ -11,6 +11,7 @@ from legged_lab.assets.delayed_implicit_actuator import DelayedPowerLimitedPDAct
 
 
 LEGGED_LAB_ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+BSRL_URDF_PATH = f"{LEGGED_LAB_ROOT_DIR}/data/Robots/BSRL_urdf/urdf/export.urdf"
 # GMR walk1 第一帧左右腿平均并按 0.1 rad 对称化后的贴地站姿高度。
 BSRL_DEFAULT_ROOT_HEIGHT = 0.8665
 
@@ -45,8 +46,14 @@ class BSRLArticulationCfg(ArticulationCfg):
 
 
 BSRL_CFG = BSRLArticulationCfg(
-    spawn=sim_utils.UsdFileCfg(
-        usd_path=f"{LEGGED_LAB_ROOT_DIR}/data/Robots/BSRL_urdf/urdf/export/export.usd",
+    # Treat the URDF as the single source of truth. Isaac Lab converts it to a
+    # cache USD at launch, so joint-limit changes do not require maintaining a
+    # second checked-in USD asset by hand.
+    spawn=sim_utils.UrdfFileCfg(
+        asset_path=BSRL_URDF_PATH,
+        fix_base=False,
+        merge_fixed_joints=False,
+        replace_cylinders_with_capsules=False,
         activate_contact_sensors=True,
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=False,
@@ -62,6 +69,9 @@ BSRL_CFG = BSRLArticulationCfg(
             enabled_self_collisions=True,
             solver_position_iteration_count=8,
             solver_velocity_iteration_count=4,
+        ),
+        joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
+            gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=0, damping=0)
         ),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
@@ -93,12 +103,12 @@ BSRL_CFG = BSRLArticulationCfg(
             peak_power=BSRL_LARGE_MOTOR_PEAK_POWER,
             armature=0.01,
             stiffness={
-                "joint_.*_hip_pitch": 100,
+                "joint_.*_hip_pitch": 150,
                 "joint_.*_hip_roll": 100,
-                "joint_.*_knee_pitch": 150,
+                "joint_.*_knee_pitch": 200,
             },
             damping={
-                "joint_.*_hip_pitch": 2,
+                "joint_.*_hip_pitch": 3,
                 "joint_.*_hip_roll": 2,
                 "joint_.*_knee_pitch": 4,
             },
@@ -120,13 +130,13 @@ BSRL_CFG = BSRLArticulationCfg(
             armature=0.01,
             stiffness={
                 "joint_.*_hip_yaw": 100,
-                "joint_.*_ankle_roll": 40,
-                "joint_.*_ankle_pitch": 40,
+                "joint_.*_ankle_roll": 100,
+                "joint_.*_ankle_pitch": 100,
             },
             damping={
                 "joint_.*_hip_yaw": 2,
-                "joint_.*_ankle_roll": 2,
-                "joint_.*_ankle_pitch": 2,
+                "joint_.*_ankle_roll": 3,
+                "joint_.*_ankle_pitch": 3,
             },
         ),
         # 第一版原生 actuator 写法保留区：本轮不启用。

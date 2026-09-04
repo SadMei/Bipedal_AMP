@@ -34,6 +34,48 @@ class AnimationTerm(ManagerTermBase):
 
         # Get motion data term
         self.motion_data_term: MotionDataTerm = env.motion_data_manager.get_term(cfg.motion_data_term)
+        self._command_category_motion_ids = None
+        if self.cfg.command_name is not None:
+            required_categories = (
+                "forward",
+                "backward",
+                "lateral_left",
+                "lateral_right",
+                "rotate_left",
+                "rotate_right",
+            )
+            if self.cfg.command_motion_patterns is None:
+                raise ValueError("command_motion_patterns is required when command_name is configured")
+            missing_categories = set(required_categories) - set(self.cfg.command_motion_patterns)
+            if missing_categories:
+                raise ValueError(f"Missing command-conditioned motion categories: {sorted(missing_categories)}")
+            if any(scale <= 0.0 for scale in self.cfg.command_component_scales):
+                raise ValueError("command_component_scales must contain three positive values")
+            self._command_category_motion_ids = {
+                category: self.motion_data_term.motion_ids_matching(self.cfg.command_motion_patterns[category])
+                for category in required_categories
+            }
+            self._command_category_motion_speeds = None
+            if self.cfg.match_command_speed:
+                category_components = {
+                    "forward": (self.motion_data_term.motion_mean_root_vel_b, 0),
+                    "backward": (self.motion_data_term.motion_mean_root_vel_b, 0),
+                    "lateral_left": (self.motion_data_term.motion_mean_root_vel_b, 1),
+                    "lateral_right": (self.motion_data_term.motion_mean_root_vel_b, 1),
+                    "rotate_left": (self.motion_data_term.motion_mean_root_ang_vel_b, 2),
+                    "rotate_right": (self.motion_data_term.motion_mean_root_ang_vel_b, 2),
+                }
+                self._command_category_motion_speeds = {
+                    category: torch.abs(values[motion_ids, component])
+                    for category, motion_ids in self._command_category_motion_ids.items()
+                    for values, component in (category_components[category],)
+                }
+                category_summary = ", ".join(
+                    f"{category}="
+                    f"{[round(speed, 3) for speed in self._command_category_motion_speeds[category].tolist()]}"
+                    for category in required_categories
+                )
+                print(f"[AnimationTerm] Command-conditioned motion speeds: {category_summary}")
 
         # create buffers
         self.num_steps = len(self.step_indices)
@@ -57,6 +99,7 @@ class AnimationTerm(ManagerTermBase):
         self.motion_ids = torch.zeros(self.num_envs, device=env.device, dtype=torch.long)
         self.motion_fetch_time = torch.zeros((self.num_envs, self.num_steps), device=env.device, dtype=torch.float32)
         self.motion_durations = torch.zeros(self.num_envs, device=env.device, dtype=torch.float32)
+        self._reported_command_match = False
 
         self.reset(torch.arange(self.num_envs))
         self._fetch_motion_data()
@@ -82,8 +125,14 @@ class AnimationTerm(ManagerTermBase):
         if env_ids is None:
             return
 
-        # resample motion ids for the reset envs
-        self.motion_ids[env_ids] = self.motion_data_term.sample_motions(len(env_ids))
+        # Select the reset clip from the newly sampled episode command whenever
+        # command-conditioned references are enabled.  During manager
+        # construction the command manager does not exist yet, so initialization
+        # deliberately falls back to the original dataset-wide sampling.
+        if self._command_category_motion_ids is not None and hasattr(self._env, "command_manager"):
+            self._sample_motions_for_commands(env_ids)
+        else:
+            self.motion_ids[env_ids] = self.motion_data_term.sample_motions(len(env_ids))
         self.motion_durations[env_ids] = self.motion_data_term.get_motion_durations(self.motion_ids[env_ids])
 
         truncate_time = self.num_steps * self._env.step_dt
@@ -108,6 +157,7 @@ class AnimationTerm(ManagerTermBase):
         self._fetch_motion_data(env_ids)
 
     def update(self, dt: float):
+        self._sample_motions_for_commands()
         if self.cfg.random_fetch:
             if self.cfg.num_steps_to_use > 0:
                 self.motion_fetch_time[:, 0] = self.motion_data_term.sample_times(
@@ -129,6 +179,90 @@ class AnimationTerm(ManagerTermBase):
 
         if self.cfg.enable_visualization:
             self._visualize()
+
+    def _sample_motions_for_commands(self, env_ids: Sequence[int] | None = None):
+        """Select matching reference clips for all or a subset of environments."""
+        if self._command_category_motion_ids is None or not hasattr(self._env, "command_manager"):
+            return
+
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, device=self._env.device, dtype=torch.long)
+        else:
+            env_ids = torch.as_tensor(env_ids, device=self._env.device, dtype=torch.long)
+        if len(env_ids) == 0:
+            return
+
+        command = self._env.command_manager.get_command(self.cfg.command_name)[env_ids]
+        if command.shape[1] < 3:
+            raise ValueError(
+                f"Command '{self.cfg.command_name}' must provide [vx, vy, yaw], got shape {tuple(command.shape)}"
+            )
+
+        scale_x, scale_y, scale_yaw = self.cfg.command_component_scales
+        scores = torch.stack(
+            (
+                torch.clamp(command[:, 0], min=0.0) / scale_x,
+                torch.clamp(-command[:, 0], min=0.0) / scale_x,
+                torch.clamp(command[:, 1], min=0.0) / scale_y,
+                torch.clamp(-command[:, 1], min=0.0) / scale_y,
+                torch.clamp(command[:, 2], min=0.0) / scale_yaw,
+                torch.clamp(-command[:, 2], min=0.0) / scale_yaw,
+            ),
+            dim=1,
+        )
+        categories = tuple(self._command_category_motion_ids)
+        category_ids = torch.argmax(scores, dim=1)
+        command_speeds = torch.max(scores, dim=1).values
+        if self.cfg.match_command_speed:
+            # Convert the normalized dominant-component score back to physical
+            # units before comparing it with the measured clip speeds.
+            category_scales = torch.tensor(
+                (scale_x, scale_x, scale_y, scale_y, scale_yaw, scale_yaw),
+                device=command.device,
+                dtype=command.dtype,
+            )
+            command_speeds = command_speeds * category_scales[category_ids]
+            selected_speeds = torch.zeros_like(command_speeds)
+        for category_index, category in enumerate(categories):
+            category_mask = category_ids == category_index
+            category_env_ids = env_ids[category_mask]
+            if len(category_env_ids) == 0:
+                continue
+            candidate_ids = self._command_category_motion_ids[category]
+            if self.cfg.match_command_speed:
+                candidate_speeds = self._command_category_motion_speeds[category]
+                speed_error = torch.abs(command_speeds[category_mask, None] - candidate_speeds[None, :])
+                nearest_indices = torch.argmin(speed_error, dim=1)
+                self.motion_ids[category_env_ids] = candidate_ids[nearest_indices]
+                selected_speeds[category_mask] = candidate_speeds[nearest_indices]
+            else:
+                self.motion_ids[category_env_ids] = self.motion_data_term.sample_motion_ids(
+                    candidate_ids, len(category_env_ids)
+                )
+            self.motion_durations[category_env_ids] = self.motion_data_term.get_motion_durations(
+                self.motion_ids[category_env_ids]
+            )
+
+        if not self._reported_command_match:
+            counts = [int(torch.sum(category_ids == index).item()) for index in range(len(categories))]
+            count_summary = ", ".join(f"{category}={count}" for category, count in zip(categories, counts))
+            motion_counts = torch.bincount(self.motion_ids[env_ids], minlength=len(self.motion_data_term.motion_names))
+            motion_summary = ", ".join(
+                f"{name}={int(motion_counts[motion_id].item())}"
+                for motion_id, name in enumerate(self.motion_data_term.motion_names)
+                if motion_counts[motion_id] > 0
+            )
+            if self.cfg.match_command_speed:
+                mean_error = torch.mean(torch.abs(command_speeds - selected_speeds)).item()
+                max_error = torch.max(torch.abs(command_speeds - selected_speeds)).item()
+                match_summary = f"speed=nearest, mean_error={mean_error:.3f}, max_error={max_error:.3f}"
+            else:
+                match_summary = "speed=random-within-category"
+            print(
+                "[AnimationTerm] Initial command-matched sample: "
+                f"{count_summary}; {match_summary}; clips: {motion_summary}"
+            )
+            self._reported_command_match = True
 
     def _fetch_motion_data(self, env_ids: Sequence[int] | None = None):
         if env_ids is None:
@@ -156,6 +290,13 @@ class AnimationTerm(ManagerTermBase):
                 # Reshape: (num_envs * num_steps, *) -> (num_envs, num_steps, *)
                 data_reshaped = data.view(len(env_ids), self.num_steps, *data.shape[1:])
                 getattr(self, buffer_name)[env_ids, :, :] = data_reshaped
+
+    def get_command_category_speed_range(self, category: str) -> tuple[float, float]:
+        """Return the measured minimum and maximum clip speed for a category."""
+        if self._command_category_motion_speeds is None or category not in self._command_category_motion_speeds:
+            raise KeyError(f"Animation term has no command-conditioned category {category!r}")
+        speeds = self._command_category_motion_speeds[category]
+        return float(torch.min(speeds).item()), float(torch.max(speeds).item())
 
     def _visualize(self):
         # try to get the 'robot_anim' articulation
@@ -307,6 +448,11 @@ class AnimationManager(ManagerBase):
         for term in self._terms.values():
             term.reset(env_ids)
         return {}
+
+    @property
+    def uses_command_conditioning(self) -> bool:
+        """Whether any animation term selects reference clips from commands."""
+        return any(term.cfg.command_name is not None for term in self._terms.values())
 
     """
     Properties.

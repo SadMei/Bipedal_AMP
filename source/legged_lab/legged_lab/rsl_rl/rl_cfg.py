@@ -43,6 +43,9 @@ class RslRlPpoAmpAlgorithmCfg(RslRlPpoAlgorithmCfg):
     amp_cfg: RslRlAmpCfg = RslRlAmpCfg()
     """Configuration for the AMP (Adversarial Motion Priors) in the training."""
 
+    state_est_loss_required: bool = False
+    """Whether the AMP policy must expose and train a supervised state estimator."""
+
 
 #########################
 # Runner configurations #

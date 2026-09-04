@@ -115,7 +115,53 @@ class ManagerBasedAnimationEnv(ManagerBasedRLEnv):
         return self.obs_buf, self.reward_buf, self.reset_terminated, self.reset_time_outs, self.extras
 
     def _reset_idx(self, env_ids: Sequence[int]):
-        # -- animation manager
+        # Preserve the original Isaac Lab reset path for tasks (including BSRL)
+        # that do not condition reference motions on velocity commands.
+        if not self.animation_manager.uses_command_conditioning:
+            self.animation_manager.reset(env_ids)
+            super()._reset_idx(env_ids)
+            return
+
+        # Command-conditioned reset order:
+        # curriculum -> scene -> new command -> matching reference -> reset events.
+        # In particular, reset_from_ref must see the clip selected from the new
+        # episode command, not the command belonging to the previous episode.
+        self.curriculum_manager.compute(env_ids=env_ids)
+        self.scene.reset(env_ids)
+
+        self.extras["log"] = dict()
+        info = self.command_manager.reset(env_ids)
+        self.extras["log"].update(info)
         self.animation_manager.reset(env_ids)
 
-        super()._reset_idx(env_ids)
+        if "reset" in self.event_manager.available_modes:
+            env_step_count = self._sim_step_counter // self.cfg.decimation
+            self.event_manager.apply(mode="reset", env_ids=env_ids, global_env_step_count=env_step_count)
+
+        # reset_from_ref may change the root yaw after command generation.  Let
+        # command terms synchronize episode-frame state without sampling again.
+        for animation_name in self.animation_manager.active_terms:
+            animation_term = self.animation_manager.get_term(animation_name)
+            command_name = animation_term.cfg.command_name
+            if command_name is None:
+                continue
+            command_term = self.command_manager.get_term(command_name)
+            sync_after_reset = getattr(command_term, "sync_episode_frame_after_reset", None)
+            if sync_after_reset is not None:
+                sync_after_reset(env_ids)
+
+        # Match ManagerBasedRLEnv._reset_idx exactly, except that the command
+        # manager has already been reset once above and must not be resampled.
+        for manager in (
+            self.observation_manager,
+            self.action_manager,
+            self.reward_manager,
+            self.curriculum_manager,
+            self.event_manager,
+            self.termination_manager,
+            self.recorder_manager,
+        ):
+            info = manager.reset(env_ids)
+            self.extras["log"].update(info)
+
+        self.episode_length_buf[env_ids] = 0

@@ -1,9 +1,10 @@
 """RSL-RL AMP runner configuration for Men T1."""
 
 from isaaclab.utils import configclass
-from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg
+from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg
 
 from legged_lab.rsl_rl import RslRlAmpCfg, RslRlPpoAmpAlgorithmCfg
+from legged_lab.state_est.config import RslRlEstimatorActorCriticCfg
 
 
 @configclass
@@ -15,11 +16,12 @@ class T1RslRlOnPolicyRunnerAmpCfg(RslRlOnPolicyRunnerCfg):
     experiment_name = "men_t1_amp"
     obs_groups = {
         "policy": ["policy"],
-        "critic": ["critic"],
+        # Keep new reward privileges last so legacy checkpoint inputs remain a prefix.
+        "critic": ["critic", "state_est_critic", "reward_privileged"],
         "discriminator": ["disc"],
         "discriminator_demonstration": ["disc_demo"],
     }
-    policy = RslRlPpoActorCriticCfg(
+    policy = RslRlEstimatorActorCriticCfg(
         init_noise_std=1.0,
         noise_std_type="log",
         actor_hidden_dims=[512, 256, 128],
@@ -33,7 +35,7 @@ class T1RslRlOnPolicyRunnerAmpCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        entropy_coef=0.005,
+        entropy_coef=0.001,
         num_learning_epochs=5,
         # 8192 environments produce 196608 transitions per rollout. Splitting
         # those into 16 batches keeps AMP's create-graph gradient penalty below
@@ -45,6 +47,7 @@ class T1RslRlOnPolicyRunnerAmpCfg(RslRlOnPolicyRunnerCfg):
         lam=0.95,
         desired_kl=0.01,
         max_grad_norm=1.0,
+        state_est_loss_required=True,
         amp_cfg=RslRlAmpCfg(
             # T1 has fewer and more homogeneous clips than G1. A longer replay
             # window and slower discriminator prevent near-perfect separation
@@ -53,28 +56,23 @@ class T1RslRlOnPolicyRunnerAmpCfg(RslRlOnPolicyRunnerCfg):
             grad_penalty_scale=10.0,
             disc_trunk_weight_decay=1.0e-4,
             disc_linear_weight_decay=1.0e-2,
-            disc_learning_rate=1.0e-5,
+            disc_learning_rate=2.0e-6,
             disc_max_grad_norm=1.0,
+            save_best_style_checkpoint=True,
+            best_style_warmup_iterations=250,
+            best_style_save_interval=100,
+            best_style_min_delta=0.01,
             amp_discriminator=RslRlAmpCfg.AMPDiscriminatorCfg(
                 hidden_dims=[1024, 512],
                 activation="elu",
-                style_reward_scale=5.5,
-                # Keep style dominant. Translational reference velocity is now
-                # part of the discriminator, so task reward need not overpower
-                # AMP merely to prevent an in-place gait.
+                style_reward_scale=5.0,
+                # The 0.5/5.0 ablation let the task reward dominate: the
+                # discriminator saturated and the policy drove joints into
+                # their limits.  Restore the last configuration that retained
+                # a useful AMP signal throughout training.
                 task_style_lerp=0.4,
             ),
             loss_type="LSGAN",
         ),
         symmetry_cfg=None,
     )
-
-
-@configclass
-class T1AlignedBaselineRslRlOnPolicyRunnerAmpCfg(T1RslRlOnPolicyRunnerAmpCfg):
-    """Keep the aligned baseline run separate from the tuned T1 experiment."""
-
-    experiment_name = "men_t1_amp_aligned_baseline"
-
-    def __post_init__(self):
-        self.algorithm.amp_cfg.amp_discriminator.style_reward_scale = 5.0

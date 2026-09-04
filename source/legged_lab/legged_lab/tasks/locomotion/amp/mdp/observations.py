@@ -5,13 +5,64 @@ from typing import TYPE_CHECKING
 
 import isaaclab.utils.math as math_utils
 from isaaclab.assets import Articulation
-from isaaclab.managers import SceneEntityCfg
+from isaaclab.managers import ManagerTermBase, ObservationTermCfg, SceneEntityCfg
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedEnv
 
     from legged_lab.envs import ManagerBasedAnimationEnv
     from legged_lab.managers import AnimationTerm
+
+
+class zero_command_heading_error(ManagerTermBase):
+    """Encode error from the episode's initial yaw for zero-yaw commands.
+
+    The two outputs are ``sin(error)`` and ``cos(error)``.  For commanded
+    turns the term emits the neutral value ``[0, 1]`` so it does not impose an
+    episode-initial heading target on turning behavior.
+    """
+
+    def __init__(self, env: ManagerBasedEnv, cfg: ObservationTermCfg):
+        super().__init__(cfg, env)
+        asset_cfg = cfg.params.get("asset_cfg", SceneEntityCfg("robot"))
+        robot: Articulation = env.scene[asset_cfg.name]
+        self.target_yaw = math_utils.euler_xyz_from_quat(robot.data.root_quat_w)[2].clone()
+
+    def reset(self, env_ids=None):
+        asset_cfg = self.cfg.params.get("asset_cfg", SceneEntityCfg("robot"))
+        robot: Articulation = self._env.scene[asset_cfg.name]
+        if env_ids is None:
+            env_ids = slice(None)
+        self.target_yaw[env_ids] = math_utils.euler_xyz_from_quat(robot.data.root_quat_w[env_ids])[2]
+
+    def __call__(
+        self,
+        env: ManagerBasedEnv,
+        command_name: str,
+        command_threshold: float = 0.1,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    ) -> torch.Tensor:
+        robot: Articulation = env.scene[asset_cfg.name]
+        yaw = math_utils.euler_xyz_from_quat(robot.data.root_quat_w)[2]
+        error = math_utils.wrap_to_pi(self.target_yaw - yaw)
+        zero_turn = torch.abs(env.command_manager.get_command(command_name)[:, 2]) < command_threshold
+        sin_error = torch.where(zero_turn, torch.sin(error), torch.zeros_like(error))
+        cos_error = torch.where(zero_turn, torch.cos(error), torch.ones_like(error))
+        return torch.stack((sin_error, cos_error), dim=-1)
+
+
+def integrated_heading_error(
+    env: ManagerBasedEnv,
+    command_name: str,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Encode error from the yaw-rate-integrated command heading."""
+    robot: Articulation = env.scene[asset_cfg.name]
+    command_term = env.command_manager.get_term(command_name)
+    if not hasattr(command_term, "heading_target"):
+        raise AttributeError(f"Command term {command_name!r} does not expose an integrated heading target.")
+    error = math_utils.wrap_to_pi(command_term.heading_target - robot.data.heading_w)
+    return torch.stack((torch.sin(error), torch.cos(error)), dim=-1)
 
 
 def root_local_rot_tan_norm(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
@@ -70,3 +121,14 @@ def ref_root_lin_vel_b(
     if flatten_steps_dim:
         return ref_root_vel_b.reshape(env.num_envs, -1)
     return ref_root_vel_b
+
+
+def ref_velocity_commands(
+    env: ManagerBasedAnimationEnv,
+    animation: str,
+    command_name: str,
+) -> torch.Tensor:
+    """Repeat the current velocity command across all reference AMP steps."""
+    animation_term: AnimationTerm = env.animation_manager.get_term(animation)
+    command = env.command_manager.get_command(command_name)
+    return command.unsqueeze(1).expand(-1, animation_term.num_steps, -1)

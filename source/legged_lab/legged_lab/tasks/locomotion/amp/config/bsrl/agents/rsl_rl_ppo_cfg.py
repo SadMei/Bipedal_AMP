@@ -5,23 +5,27 @@ from legged_lab.rsl_rl import (
     RslRlAmpCfg,
     RslRlPpoAmpAlgorithmCfg,
 )
+# Estimator comparison switch (keep these lines for later pipeline runs):
+# from legged_lab.state_est.config import RslRlEstimatorActorCriticCfg
 
 
 @configclass
 class BSRLRslRlOnPolicyRunnerAmpCfg(RslRlOnPolicyRunnerCfg):
     class_name = "AMPRunner"
     num_steps_per_env = 24
-    max_iterations = 20000
+    max_iterations = 30000
     save_interval = 1000
     experiment_name = "bsrl_amp"
     obs_groups = {
         "policy": ["policy"],
-        "critic": ["critic"],
+        # Base-height and reward privileges belong to the critic independently
+        # of whether the deployable actor estimator is enabled.
+        "critic": ["critic", "state_est_critic", "reward_privileged"],
         "discriminator": ["disc"],
         "discriminator_demonstration": ["disc_demo"],
     }
-    # 与宇树 G1 一致，使用 RSL-RL 原生 ActorCritic 和默认 scalar std。
     policy = RslRlPpoActorCriticCfg(
+        # Estimator comparison: replace with RslRlEstimatorActorCriticCfg.
         init_noise_std=1.0,
         actor_hidden_dims=[512, 256, 128],
         critic_hidden_dims=[512, 256, 128],
@@ -43,6 +47,8 @@ class BSRLRslRlOnPolicyRunnerAmpCfg(RslRlOnPolicyRunnerCfg):
         lam=0.95,
         desired_kl=0.01,
         max_grad_norm=1.0,
+        state_est_loss_required=False,
+        # Estimator comparison: state_est_loss_required=True.
         amp_cfg=RslRlAmpCfg(
             disc_obs_buffer_size=100,
             grad_penalty_scale=10.0,
@@ -60,11 +66,3 @@ class BSRLRslRlOnPolicyRunnerAmpCfg(RslRlOnPolicyRunnerCfg):
         ),
         symmetry_cfg=None,
     )
-
-
-@configclass
-class BSRLNoActorFeetRslRlOnPolicyRunnerAmpCfg(BSRLRslRlOnPolicyRunnerAmpCfg):
-    """Store the no-actor-foot-observation experiment in an isolated log tree."""
-
-    max_iterations = 30000
-    experiment_name = "bsrl_amp_no_actor_feet"

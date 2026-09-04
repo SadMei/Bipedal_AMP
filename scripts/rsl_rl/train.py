@@ -57,6 +57,18 @@ parser.add_argument(
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
 parser.add_argument(
+    "--use_estimator",
+    action="store_true",
+    default=False,
+    help="Enable the supervised 4-D state estimator and append its estimate inside the actor.",
+)
+parser.add_argument(
+    "--t1_amp_finetune",
+    action="store_true",
+    default=False,
+    help="Keep resumed T1 AMP training at the final command range instead of restarting its curriculum.",
+)
+parser.add_argument(
     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
 )
 parser.add_argument("--export_io_descriptors", action="store_true", default=False, help="Export IO descriptors.")
@@ -149,6 +161,23 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # override configurations with non-hydra CLI arguments
     agent_cfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
     agent_cfg = prepare_agent_cfg_for_local_rsl_rl(agent_cfg, local_rsl_rl_version)
+    if args_cli.use_estimator:
+        from legged_lab.state_est.config import enable_state_estimator
+
+        enable_state_estimator(env_cfg, agent_cfg)
+        print("[INFO] State estimator enabled: 4-D estimate appended inside the actor.")
+    if args_cli.t1_amp_finetune:
+        curriculum_term = getattr(env_cfg.curriculum, "velocity_range_and_tracking_std", None)
+        if curriculum_term is None:
+            raise ValueError("--t1_amp_finetune requires the T1 velocity curriculum.")
+        params = curriculum_term.params
+        command_ranges = env_cfg.commands.base_velocity.ranges
+        command_ranges.lin_vel_x = tuple(params["lin_vel_x_ranges"][-1])
+        command_ranges.lin_vel_y = tuple(params["lin_vel_y_ranges"][-1])
+        command_ranges.ang_vel_z = tuple(params["ang_vel_z_ranges"][-1])
+        env_cfg.rewards.track_lin_vel_xy_exp.params["std"] = params["tracking_stds"][-1]
+        env_cfg.curriculum.velocity_range_and_tracking_std = None
+        print("[INFO] T1 AMP fine-tune mode: fixed final command range with curriculum disabled.")
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     agent_cfg.max_iterations = (
         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations

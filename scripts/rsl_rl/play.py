@@ -62,7 +62,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--command_profile",
-    choices=("config", "mixed", "t1_large"),
+    choices=("config", "mixed", "t1_large", "t1_forward_06", "t1_forward_075", "t1_forward_08", "t1_forward_10"),
     default="config",
     help="Use commands from the environment config or a deterministic mixed-command sequence.",
 )
@@ -86,6 +86,24 @@ parser.add_argument(
     action="store_true",
     default=False,
     help="Print compact robot state and action diagnostics during playback.",
+)
+parser.add_argument(
+    "--nominal_eval",
+    action="store_true",
+    default=False,
+    help="Disable training randomization, pushes, observation corruption, and reference-state resets.",
+)
+parser.add_argument(
+    "--use_estimator",
+    action="store_true",
+    default=False,
+    help="Load a checkpoint trained with the supervised 4-D state estimator.",
+)
+parser.add_argument(
+    "--heading_observation_mode",
+    choices=("config", "zero_lock", "integrated"),
+    default="config",
+    help="Override the T1 heading-error observation semantics to match the selected checkpoint.",
 )
 parser.add_argument(
     "--debug_interval",
@@ -119,6 +137,8 @@ import gymnasium as gym
 import time
 import torch
 import carb
+import yaml
+import isaaclab.envs.mdp as il_mdp
 import isaaclab.utils.math as math_utils
 
 if not args_cli.headless:
@@ -134,19 +154,20 @@ from isaaclab.envs import (
     ManagerBasedRLEnvCfg,
     multi_agent_to_single_agent,
 )
+from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.utils.assets import retrieve_file_path
 from isaaclab.utils.dict import print_dict
 from isaaclab_rl.rsl_rl import (
     RslRlBaseRunnerCfg,
     RslRlVecEnvWrapper,
     export_policy_as_jit,
-    export_policy_as_onnx,
 )
 from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
 # Import extensions to set up environment tasks
 import legged_lab.tasks  # noqa: F401
+from legged_lab.rsl_rl import export_policy_as_onnx
 
 # PLACEHOLDER: Extension template (do not remove this comment)
 
@@ -166,6 +187,10 @@ T1_LARGE_COMMANDS = (
     (1.2, 0.0, 1.5),
     (1.2, 0.0, -1.5),
 )
+T1_FORWARD_06_COMMANDS = ((0.6, 0.0, 0.0),)
+T1_FORWARD_075_COMMANDS = ((0.75, 0.0, 0.0),)
+T1_FORWARD_08_COMMANDS = ((0.8, 0.0, 0.0),)
+T1_FORWARD_10_COMMANDS = ((1.0, 0.0, 0.0),)
 MIXED_PHASE_STEPS = 150
 
 
@@ -179,6 +204,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # override configurations with non-hydra CLI arguments
     agent_cfg: RslRlBaseRunnerCfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
     agent_cfg = prepare_agent_cfg_for_local_rsl_rl(agent_cfg, local_rsl_rl_version)
+    if args_cli.use_estimator:
+        from legged_lab.state_est.config import enable_state_estimator
+
+        enable_state_estimator(env_cfg, agent_cfg)
+        print("[INFO] State estimator enabled: 4-D estimate appended inside the actor.")
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
 
     # set the environment seed
@@ -209,10 +239,117 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # set the log directory for the environment (works for all environment types)
     env_cfg.log_dir = log_dir
 
-    command_sequence = T1_LARGE_COMMANDS if args_cli.command_profile == "t1_large" else MIXED_COMMANDS
+    # Replay with the robot asset used by the checkpoint.  T1's default asset
+    # can change between training runs (for example, 0722 -> 0809); loading an
+    # old policy against the current URDF may keep the same tensor dimensions
+    # while silently changing joint frames/limits and producing a twisted pose.
+    saved_env_cfg_path = os.path.join(log_dir, "params", "env.yaml")
+    if os.path.isfile(saved_env_cfg_path):
+        with open(saved_env_cfg_path, encoding="utf-8") as saved_env_cfg_file:
+            saved_env_cfg = yaml.load(saved_env_cfg_file, Loader=yaml.BaseLoader)
+        saved_asset_path = (
+            saved_env_cfg.get("scene", {}).get("robot", {}).get("spawn", {}).get("asset_path")
+        )
+        if saved_asset_path:
+            if os.path.isfile(saved_asset_path):
+                current_asset_path = env_cfg.scene.robot.spawn.asset_path
+                env_cfg.scene.robot.spawn.asset_path = saved_asset_path
+                if current_asset_path != saved_asset_path:
+                    print(
+                        "[INFO] Restored checkpoint robot asset: "
+                        f"{current_asset_path} -> {saved_asset_path}"
+                    )
+            else:
+                print(f"[WARN] Checkpoint robot asset does not exist: {saved_asset_path}")
+
+        # PD gains are part of the plant seen during training, not policy
+        # weights. Restore them as well so an older checkpoint is not silently
+        # evaluated with gains from the current source tree.
+        saved_actuators = saved_env_cfg.get("scene", {}).get("robot", {}).get("actuators", {})
+        restored_gain_groups = []
+        for actuator_name, actuator_cfg in env_cfg.scene.robot.actuators.items():
+            saved_actuator_cfg = saved_actuators.get(actuator_name, {})
+            restored = False
+            for gain_name in ("stiffness", "damping"):
+                saved_gains = saved_actuator_cfg.get(gain_name)
+                if isinstance(saved_gains, dict):
+                    setattr(actuator_cfg, gain_name, {name: float(value) for name, value in saved_gains.items()})
+                    restored = True
+            if restored:
+                restored_gain_groups.append(actuator_name)
+        if restored_gain_groups:
+            print(f"[INFO] Restored checkpoint PD gains: {', '.join(restored_gain_groups)}")
+
+    if args_cli.heading_observation_mode != "config":
+        from legged_lab.tasks.locomotion.amp import mdp as amp_mdp
+        from isaaclab.managers import ObservationTermCfg as ObsTerm
+
+        heading_term = env_cfg.observations.policy.heading_error
+        critic_heading_term = env_cfg.observations.critic.heading_error
+        if args_cli.heading_observation_mode == "zero_lock":
+            heading_func = amp_mdp.zero_command_heading_error
+            heading_params = {"command_name": "base_velocity", "command_threshold": 0.1}
+        else:
+            heading_func = amp_mdp.integrated_heading_error
+            heading_params = {"command_name": "base_velocity"}
+        if heading_term is None:
+            heading_term = ObsTerm(func=heading_func, params=heading_params.copy())
+            env_cfg.observations.policy.heading_error = heading_term
+        for term in (heading_term, critic_heading_term):
+            term.func = heading_func
+            term.params = heading_params.copy()
+        print(f"[INFO] Heading observation mode: {args_cli.heading_observation_mode}")
+
+    command_sequences = {
+        "mixed": MIXED_COMMANDS,
+        "t1_large": T1_LARGE_COMMANDS,
+        "t1_forward_06": T1_FORWARD_06_COMMANDS,
+        "t1_forward_075": T1_FORWARD_075_COMMANDS,
+        "t1_forward_08": T1_FORWARD_08_COMMANDS,
+        "t1_forward_10": T1_FORWARD_10_COMMANDS,
+    }
+    command_sequence = command_sequences.get(args_cli.command_profile, MIXED_COMMANDS)
+    if args_cli.nominal_eval:
+        # Preserve the selected task's policy/observation structure while making
+        # playback deterministic and representative of nominal deployment.
+        if hasattr(env_cfg.observations, "policy"):
+            env_cfg.observations.policy.enable_corruption = False
+        for event_name in (
+            "physics_material",
+            "add_joint_default_pos",
+            "base_com",
+            "actuator_gains",
+            "body_mass",
+            "joint_params",
+            "joint_friction",
+            "base_external_force_torque",
+            "push_robot",
+        ):
+            if hasattr(env_cfg.events, event_name):
+                setattr(env_cfg.events, event_name, None)
+        if hasattr(env_cfg.events, "reset_from_ref"):
+            env_cfg.events.reset_from_ref = None
+        if hasattr(env_cfg.events, "reset_to_default"):
+            env_cfg.events.reset_to_default = EventTerm(
+                func=il_mdp.reset_scene_to_default,
+                mode="reset",
+                params={"reset_joint_targets": True},
+            )
+        for actuator_cfg in env_cfg.scene.robot.actuators.values():
+            if hasattr(actuator_cfg, "min_delay"):
+                actuator_cfg.min_delay = 0
+            if hasattr(actuator_cfg, "max_delay"):
+                actuator_cfg.max_delay = 0
+        if args_cli.video:
+            video_duration_s = args_cli.video_length * env_cfg.decimation * env_cfg.sim.dt
+            env_cfg.episode_length_s = max(env_cfg.episode_length_s, video_duration_s + 1.0)
+
     if args_cli.command_profile != "config":
         # Seed the first command before reset so the initial observation history is consistent.
         command_cfg = env_cfg.commands.base_velocity
+        # A fixed playback profile must not be changed again on an automatic
+        # episode reset. This only affects the local playback configuration.
+        env_cfg.curriculum.velocity_range_and_tracking_std = None
         initial_command = command_sequence[0]
         command_cfg.resampling_time_range = (1.0e9, 1.0e9)
         command_cfg.ranges.lin_vel_x = (initial_command[0], initial_command[0])
@@ -225,6 +362,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
+
+    # Curriculum initialization can overwrite the fixed playback range while the
+    # environment is being constructed.  Re-apply it to the live command term.
+    if args_cli.command_profile != "config":
+        initial_command = command_sequence[0]
+        command_term = env.unwrapped.command_manager.get_term("base_velocity")
+        command_term.cfg.ranges.lin_vel_x = (initial_command[0], initial_command[0])
+        command_term.cfg.ranges.lin_vel_y = (initial_command[1], initial_command[1])
+        command_term.cfg.ranges.ang_vel_z = (initial_command[2], initial_command[2])
+        command_term.command[:] = command_term.command.new_tensor(initial_command)
 
     # convert to single-agent instance if required by the RL algorithm
     if isinstance(env.unwrapped, DirectMARLEnv):
@@ -302,6 +449,15 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         if args_cli.debug_state or args_cli.command_profile != "config"
         else None
     )
+    if args_cli.command_profile != "config":
+        # Runner construction resets the environment once more, so this is the
+        # final authoritative override used by both the policy and simulation.
+        initial_command = command_sequence[0]
+        command_term.cfg.ranges.lin_vel_x = (initial_command[0], initial_command[0])
+        command_term.cfg.ranges.lin_vel_y = (initial_command[1], initial_command[1])
+        command_term.cfg.ranges.ang_vel_z = (initial_command[2], initial_command[2])
+        command_term.command[:] = command_term.command.new_tensor(initial_command)
+        obs = env.get_observations()
     mixed_phase = 0
     reset_requested = False
     input_interface = None
@@ -324,21 +480,26 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if args_cli.debug_state:
         action_term = sim_env.action_manager.get_term("joint_pos")
         animation_term = sim_env.animation_manager.get_term("animation")
-        debug_body_ids, _ = robot.find_bodies(
-            ["link_right_ankle_roll", "link_left_ankle_roll"], preserve_order=True
-        )
+        if "left_ankle_pitch_Link" in robot.body_names:
+            debug_foot_names = ["left_ankle_pitch_Link", "right_ankle_pitch_Link"]
+        else:
+            debug_foot_names = ["link_right_ankle_roll", "link_left_ankle_roll"]
+        debug_body_ids, _ = robot.find_bodies(debug_foot_names, preserve_order=True)
 
         def _debug_state(label: str, dones=None):
             root_pos = robot.data.root_pos_w[0].detach().cpu().tolist()
             root_quat = robot.data.root_quat_w[0].detach().cpu().tolist()
-            joint_pos = robot.data.joint_pos[0].detach().cpu().tolist()
-            joint_vel = robot.data.joint_vel[0].detach().cpu().tolist()
+            joint_ids = action_term._joint_ids
+            joint_pos = robot.data.joint_pos[0, joint_ids].detach().cpu().tolist()
+            joint_vel = robot.data.joint_vel[0, joint_ids].detach().cpu().tolist()
+            applied_torque = robot.data.applied_torque[0, joint_ids].detach().cpu().tolist()
+            base_ang_vel_b = robot.data.root_ang_vel_b[0].detach().cpu().tolist()
             body_pos_w = robot.data.body_pos_w[0, debug_body_ids, :]
             actual_key_body_pos_b = math_utils.quat_apply_inverse(
                 robot.data.root_quat_w[0].unsqueeze(0).expand(body_pos_w.shape[0], -1),
                 body_pos_w - robot.data.root_pos_w[0].unsqueeze(0),
             )
-            reference_key_body_pos_b = animation_term.key_body_pos_b_buffer[0, 0]
+            reference_key_body_pos_b = animation_term.key_body_pos_b_buffer[0, 0, : len(debug_body_ids)]
             raw_action = action_term.raw_actions[0].detach().cpu().tolist()
             processed_action = action_term.processed_actions[0].detach().cpu().tolist()
             command = command_term.command[0].detach().cpu().tolist()
@@ -350,7 +511,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 f"raw_action={[round(v, 4) for v in raw_action]} "
                 f"target={[round(v, 4) for v in processed_action]} "
                 f"joint_pos={[round(v, 4) for v in joint_pos]} "
-                f"joint_vel={[round(v, 4) for v in joint_vel]} done={done}"
+                f"joint_vel={[round(v, 4) for v in joint_vel]} "
+                f"torque={[round(v, 4) for v in applied_torque]} "
+                f"base_ang_vel_b={[round(v, 4) for v in base_ang_vel_b]} done={done}"
                 f" key_err={float(torch.linalg.vector_norm(actual_key_body_pos_b - reference_key_body_pos_b)):.4f}"
             )
 
