@@ -1,10 +1,11 @@
 from isaaclab.utils import configclass
-from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg
+from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, RslRlSymmetryCfg
 
 from legged_lab.rsl_rl import (
     RslRlAmpCfg,
     RslRlPpoAmpAlgorithmCfg,
 )
+from legged_lab.tasks.locomotion.amp.mdp.symmetry import bsrl
 # Estimator comparison switch (keep these lines for later pipeline runs):
 # from legged_lab.state_est.config import RslRlEstimatorActorCriticCfg
 
@@ -16,6 +17,7 @@ class BSRLRslRlOnPolicyRunnerAmpCfg(RslRlOnPolicyRunnerCfg):
     max_iterations = 30000
     save_interval = 1000
     experiment_name = "bsrl_amp"
+    clip_actions = None  # No raw-action clipping; actuator limits remain active.
     obs_groups = {
         "policy": ["policy"],
         # Base-height and reward privileges belong to the critic independently
@@ -64,5 +66,10 @@ class BSRLRslRlOnPolicyRunnerAmpCfg(RslRlOnPolicyRunnerCfg):
             ),
             loss_type="LSGAN",
         ),
-        symmetry_cfg=None,
+        symmetry_cfg=RslRlSymmetryCfg(
+            use_data_augmentation=False,
+            data_augmentation_func=bsrl.compute_symmetric_states,
+            use_mirror_loss=True,
+            mirror_loss_coeff=0.1,
+        ),
     )

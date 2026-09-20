@@ -104,13 +104,13 @@ BSRL_CFG = BSRLArticulationCfg(
             armature=0.01,
             stiffness={
                 "joint_.*_hip_pitch": 150,
-                "joint_.*_hip_roll": 100,
+                "joint_.*_hip_roll": 150,
                 "joint_.*_knee_pitch": 200,
             },
             damping={
-                "joint_.*_hip_pitch": 3,
+                "joint_.*_hip_pitch": 2,
                 "joint_.*_hip_roll": 2,
-                "joint_.*_knee_pitch": 4,
+                "joint_.*_knee_pitch": 2,
             },
         ),
         # SETZ70-1EB-J (16:1): hip yaw and both ankle axes.
@@ -129,14 +129,14 @@ BSRL_CFG = BSRLArticulationCfg(
             peak_power=BSRL_SMALL_MOTOR_PEAK_POWER,
             armature=0.01,
             stiffness={
-                "joint_.*_hip_yaw": 100,
+                "joint_.*_hip_yaw": 150,
                 "joint_.*_ankle_roll": 100,
                 "joint_.*_ankle_pitch": 100,
             },
             damping={
                 "joint_.*_hip_yaw": 2,
-                "joint_.*_ankle_roll": 3,
-                "joint_.*_ankle_pitch": 3,
+                "joint_.*_ankle_roll": 1,
+                "joint_.*_ankle_pitch": 1,
             },
         ),
         # 第一版原生 actuator 写法保留区：本轮不启用。

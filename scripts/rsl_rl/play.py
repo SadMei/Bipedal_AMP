@@ -11,6 +11,7 @@ import argparse
 import builtins
 import os
 import sys
+import tempfile
 from types import SimpleNamespace
 
 # AppLauncher removes and reloads IsaacLab modules while Kit starts. Intercept
@@ -42,6 +43,26 @@ import cli_args  # isort: skip
 parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
 parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
+parser.add_argument(
+    "--restore_saved_t1_config", action="store_true",
+    help="Restore and verify the complete saved T1 environment/agent before applying playback overrides.",
+)
+parser.add_argument(
+    "--replay_audit_dir", type=str, default=None,
+    help="Save effective replay configs and provenance in a new directory without changing the training run.",
+)
+parser.add_argument(
+    "--torque_audit_dir", type=str, default=None,
+    help="Offline evaluation only: log every physics-step actuator torque for a fixed command suite.",
+)
+parser.add_argument("--torque_audit_seconds", type=float, default=60.0,
+                    help="Seconds per command in the optional torque audit.")
+parser.add_argument(
+    "--export_policy",
+    action=argparse.BooleanOptionalAction,
+    default=True,
+    help="Export ONNX/JIT during playback; disable to preserve an existing selected export.",
+)
 parser.add_argument(
     "--video_folder",
     type=str,
@@ -97,8 +118,10 @@ parser.add_argument(
     "--use_estimator",
     action="store_true",
     default=False,
-    help="Load a checkpoint trained with the supervised 4-D state estimator.",
+    help="Load an estimator checkpoint; automatically select its saved legacy4d or wbtest contract.",
 )
+parser.add_argument("--estimator_profile", choices=("auto", "wbtest", "legacy4d"), default="auto",
+                    help="Prefer auto: restore estimator version and observations from checkpoint metadata.")
 parser.add_argument(
     "--heading_observation_mode",
     choices=("config", "zero_lock", "integrated"),
@@ -117,6 +140,14 @@ cli_args.add_rsl_rl_args(parser)
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
 args_cli, hydra_args = parser.parse_known_args()
+if args_cli.estimator_profile != "auto" and not args_cli.use_estimator:
+    parser.error("--estimator_profile requires --use_estimator.")
+if args_cli.torque_audit_dir:
+    if not args_cli.nominal_eval or args_cli.video or args_cli.command_profile == "config":
+        parser.error("Torque audit requires --nominal_eval, a fixed command profile, and no --video.")
+    if args_cli.torque_audit_seconds <= 0:
+        parser.error("--torque_audit_seconds must be positive.")
+    args_cli.export_policy = False
 # always enable cameras to record video
 if args_cli.video:
     args_cli.enable_cameras = True
@@ -204,11 +235,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # override configurations with non-hydra CLI arguments
     agent_cfg: RslRlBaseRunnerCfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
     agent_cfg = prepare_agent_cfg_for_local_rsl_rl(agent_cfg, local_rsl_rl_version)
-    if args_cli.use_estimator:
-        from legged_lab.state_est.config import enable_state_estimator
-
-        enable_state_estimator(env_cfg, agent_cfg)
-        print("[INFO] State estimator enabled: 4-D estimate appended inside the actor.")
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
 
     # set the environment seed
@@ -236,6 +262,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     log_dir = os.path.dirname(resume_path)
 
+    if args_cli.use_estimator:
+        from estimator_checkpoint import restore_estimator_checkpoint
+
+        restore_estimator_checkpoint(env_cfg, agent_cfg, resume_path, args_cli.estimator_profile)
+
     # set the log directory for the environment (works for all environment types)
     env_cfg.log_dir = log_dir
 
@@ -247,6 +278,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if os.path.isfile(saved_env_cfg_path):
         with open(saved_env_cfg_path, encoding="utf-8") as saved_env_cfg_file:
             saved_env_cfg = yaml.load(saved_env_cfg_file, Loader=yaml.BaseLoader)
+        # Same URDF can mean three different actuator/physics contracts.
+        from bsrl_dynamics_restore import restore_bsrl_dynamics
+        restore_bsrl_dynamics(env_cfg, saved_env_cfg)
         saved_asset_path = (
             saved_env_cfg.get("scene", {}).get("robot", {}).get("spawn", {}).get("asset_path")
         )
@@ -275,10 +309,26 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 if isinstance(saved_gains, dict):
                     setattr(actuator_cfg, gain_name, {name: float(value) for name, value in saved_gains.items()})
                     restored = True
+                elif saved_gains is not None and str(saved_gains).lower() not in ("none", "null"):
+                    setattr(actuator_cfg, gain_name, float(saved_gains))
+                    restored = True
             if restored:
                 restored_gain_groups.append(actuator_name)
         if restored_gain_groups:
             print(f"[INFO] Restored checkpoint PD gains: {', '.join(restored_gain_groups)}")
+
+    replay_audit = None
+    if args_cli.restore_saved_t1_config:
+        if train_task_name != "LeggedLab-Isaac-AMP-T1-v0":
+            raise ValueError("--restore_saved_t1_config is restricted to T1 AMP.")
+        from frozen_run_config import restore_run_config
+
+        replay_audit = restore_run_config(env_cfg, agent_cfg, log_dir)
+        env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else 1
+        env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
+        agent_cfg.device = env_cfg.sim.device
+        env_cfg.seed = args_cli.seed if args_cli.seed is not None else agent_cfg.seed
+        print("[REPLAY] Full saved T1 configuration restored and verified before nominal overrides.")
 
     if args_cli.heading_observation_mode != "config":
         from legged_lab.tasks.locomotion.amp import mdp as amp_mdp
@@ -322,6 +372,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             "body_mass",
             "joint_params",
             "joint_friction",
+            "ankle_transmission",
             "base_external_force_torque",
             "push_robot",
         ):
@@ -343,6 +394,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         if args_cli.video:
             video_duration_s = args_cli.video_length * env_cfg.decimation * env_cfg.sim.dt
             env_cfg.episode_length_s = max(env_cfg.episode_length_s, video_duration_s + 1.0)
+        if args_cli.torque_audit_dir:
+            env_cfg.episode_length_s = max(env_cfg.episode_length_s, args_cli.torque_audit_seconds + 1.0)
 
     if args_cli.command_profile != "config":
         # Seed the first command before reset so the initial observation history is consistent.
@@ -359,6 +412,39 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         command_cfg.heading_command = False
         command_cfg.rel_heading_envs = 0.0
         command_cfg.rel_standing_envs = 0.0
+        # Historical speed-matched T1 commands reference clip-speed caches
+        # that fixed, nominal playback does not need. Do not let training
+        # mixture/single-axis sampling replace or restrict the requested input.
+        from frozen_run_config import disable_training_command_sampling
+
+        disable_training_command_sampling(command_cfg)
+
+    # The converter's default path uses second-resolution time plus Python's
+    # seeded RNG. Parallel replays with the same seed can otherwise share an
+    # incomplete USD. Use an OS-unique cache without changing the source URDF.
+    robot_spawn = env_cfg.scene.robot.spawn
+    if hasattr(robot_spawn, "usd_dir") and robot_spawn.usd_dir is None:
+        robot_spawn.usd_dir = tempfile.mkdtemp(prefix="amp_play_usd_")
+        print(f"[INFO] Isolated playback USD cache: {robot_spawn.usd_dir}")
+
+    if args_cli.replay_audit_dir:
+        from pathlib import Path
+        import hashlib
+        from isaaclab.utils.io import dump_yaml
+
+        audit_dir = Path(args_cli.replay_audit_dir)
+        audit_dir.mkdir(parents=True, exist_ok=False)
+        dump_yaml(str(audit_dir / "effective_env.yaml"), env_cfg)
+        dump_yaml(str(audit_dir / "effective_agent.yaml"), agent_cfg)
+        dump_yaml(str(audit_dir / "manifest.yaml"), {
+            "checkpoint": os.path.abspath(resume_path),
+            "checkpoint_sha256": hashlib.sha256(Path(resume_path).read_bytes()).hexdigest(),
+            "nominal_eval": args_cli.nominal_eval,
+            "command_profile": args_cli.command_profile,
+            "video_length_steps": args_cli.video_length,
+            "video_name": args_cli.video_name,
+            "source_restoration": replay_audit,
+        })
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
@@ -431,9 +517,22 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         normalizer = None
 
     # export policy to onnx/jit
-    export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
-    export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
-    export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
+    if args_cli.export_policy:
+        export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
+        export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
+        export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
+    else:
+        print("[INFO] Policy export disabled; existing ONNX/JIT files are unchanged.")
+
+    if args_cli.torque_audit_dir:
+        from torque_audit import run_torque_audit
+
+        try:
+            run_torque_audit(env, policy, policy_nn, resume_path, args_cli.torque_audit_dir,
+                             args_cli.torque_audit_seconds, simulation_app)
+        finally:
+            env.close()
+        return
 
     dt = env.unwrapped.step_dt
 

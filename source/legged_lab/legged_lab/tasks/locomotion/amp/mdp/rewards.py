@@ -11,7 +11,33 @@ import isaaclab.utils.math as math_utils
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
-    
+
+
+class ActionSecondOrderL2(ManagerTermBase):
+    """Mimic-style second-order raw-action penalty with per-environment history.
+
+    Called once per policy step by RewardManager. The first two samples after
+    an episode reset use zero-padded history, matching wbt_est. Return the
+    unweighted sum; RewardManager applies the configured weight and step_dt.
+    """
+
+    def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self._prev_prev_action = torch.zeros_like(env.action_manager.action)
+
+    def reset(self, env_ids=None) -> None:
+        if env_ids is None:
+            env_ids = slice(None)
+        self._prev_prev_action[env_ids] = 0.0
+
+    def __call__(self, env: ManagerBasedRLEnv) -> torch.Tensor:
+        action = env.action_manager.action
+        prev_action = env.action_manager.prev_action
+        second_order_diff = action - 2.0 * prev_action + self._prev_prev_action
+        self._prev_prev_action[:] = prev_action
+        return torch.sum(torch.square(second_order_diff), dim=1)
+
+
 def feet_orientation_l2(env: ManagerBasedRLEnv, 
                           sensor_cfg: SceneEntityCfg, 
                           asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:

@@ -17,6 +17,9 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
 from legged_lab.assets.bsrl import BSRL_ACTION_SCALE, BSRL_CFG # 引入你的机器人本体配置
+from legged_lab.assets.bsrl_closed_ankle import with_closed_ankles
+from legged_lab.assets.bsrl_reduced_ankle import with_reduced_ankles
+# from legged_lab.assets.bsrl_reduced_ankle import randomize_ankle_transmission
 from legged_lab.assets.bsrl_conventions import (
     BSRL_AMP_JOINT_NAMES,
     BSRL_AMP_KEY_BODY_NAMES,
@@ -42,6 +45,13 @@ FOOT_NAMES = [
 KEY_BODY_NAMES = list(BSRL_AMP_KEY_BODY_NAMES)
 FOOT_REGEX = "link_.*_ankle_roll"
 JOINT_NAMES = list(BSRL_AMP_JOINT_NAMES)
+
+# Pipeline switches, NOT new registered tasks. Explicit loops remain opt-in
+# for historical comparisons; new default uses a serial skeleton + transmission.
+BSRL_EXPLICIT_CLOSED_ANKLES = os.environ.get("BSRL_EXPLICIT_CLOSED_ANKLES", "0") == "1"
+# Transmission ratio/strength/response DR disabled by user for this pipeline.
+# BSRL_ANKLE_TRANSMISSION_DR = os.environ.get("BSRL_ANKLE_TRANSMISSION_DR", "0") == "1"
+BSRL_ANKLE_TRANSMISSION_DR = False
 
 
 def _validate_motion_files(motion_dir: str, motion_files: list[str]) -> None:
@@ -335,8 +345,8 @@ class BSRLEventCfg:
         mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
-            "static_friction_range": (0.8, 1.2),
-            "dynamic_friction_range": (0.8, 1.2),
+            "static_friction_range": (0.5, 1.5),
+            "dynamic_friction_range": (0.5, 1.5),
             "restitution_range": (0.0, 0.2),
             "num_buckets": 64,
         },
@@ -344,6 +354,10 @@ class BSRLEventCfg:
 
     # 不再额外增加 base 质量；全身质量与惯量统一由 body_mass 事件缩放。
     add_base_mass = None
+
+    # Enable separately after validating the nominal reduced transmission.
+    # No calibrated backlash/compliance or encoder-bias model is assumed.
+    ankle_transmission = None
 
     # 第一版：不持续施加外力或外力矩。
     base_external_force_torque = EventTerm(
@@ -490,18 +504,52 @@ class BSRLAmpEnvCfg(LocomotionAmpEnvCfg):
         super().__post_init__()
 
         # 将场景中的机器人替换为你的 BSRL 配置
-        self.scene.robot = BSRL_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+        self.scene.robot = with_reduced_ankles(BSRL_CFG).replace(prim_path="{ENV_REGEX_NS}/Robot")
         self.scene.num_envs = 8192
-
-        # 控制频率为 50 Hz：200 Hz 物理仿真每 4 步执行一次策略。
-        self.decimation = 4
+        self.decimation = 4  # original serial physics/PD 200 Hz, policy 50 Hz
+        self.sim.dt = .005
+        self.sim.physx.solver_type = 1  # TGS, original asset iterations 8/4
+        self.sim.physx.enable_external_forces_every_iteration = False
+        self.sim.physx.solve_articulation_contact_last = False
+        self.sim.render_interval = self.decimation
+        self.scene.contact_forces.update_period = self.sim.dt
+        # User-requested pipeline: no additional analytical transmission DR.
+        # Keep the implementation for historical playback / future comparisons.
+        # if BSRL_ANKLE_TRANSMISSION_DR:
+        #     if BSRL_EXPLICIT_CLOSED_ANKLES:
+        #         raise ValueError("Reduced-transmission DR cannot be applied to explicit physical loops.")
+        #     self.events.ankle_transmission = EventTerm(
+        #         func=randomize_ankle_transmission, mode="startup",
+        #         params={"ratio_range": (.97, 1.03), "strength_range": (.9, 1.),
+        #                 "response_time_range": (0., .005)},
+        #     )
+        self.events.ankle_transmission = None
+        if BSRL_EXPLICIT_CLOSED_ANKLES:
+            self.scene.robot = with_closed_ankles(BSRL_CFG, control_decimation=5).replace(prim_path="{ENV_REGEX_NS}/Robot")
+            self.scene.contact_forces.prim_path = "{ENV_REGEX_NS}/Robot/(base_link|link_.*)"
+            # New formal run: 8192-env comparisons identified the TGS external
+            # forces switch as a major closure-residual contributor. Keep the
+            # original resets, 200Hz PD/delay clock and motor-side envelope.
+            # Previous experiment: solver_type=0 (PGS128/16), both flags=True.
+            self.sim.physx.enable_external_forces_every_iteration = False
+            self.sim.physx.solver_type = 1
+            self.sim.physx.solve_articulation_contact_last = False
+            # 1ms solver substeps; all motor PD and delay buffers still tick at
+            # 200 Hz, while policy/animation/reward/curriculum remain at 50 Hz.
+            self.sim.dt = .001
+            self.decimation = 20
+            self.sim.render_interval = self.decimation
+            self.scene.contact_forces.update_period = self.sim.dt
 
         # 关节位置动作使用资产中定义的逐关节 scale，并保持 SDK 关节顺序。
         self.actions.joint_pos.scale = BSRL_ACTION_SCALE
-        # 不裁剪处理后的 PD 位置目标。参考动作中部分关节正好位于 URDF 硬限位；
-        # 允许目标略微越过限位，才能由位置误差产生抵住机械限位所需的预载力矩。
-        # 与宇树一致，runner 不裁剪原始动作；这里仅保留宽松的数值保护范围。
-        self.actions.joint_pos.clip = {".*": (-100.0, 100.0)}
+        # 历史目标角裁剪保留追溯；当前对齐 G1 AMP，不裁剪 PD 目标角：
+        # self.actions.joint_pos.clip = {".*": (-100.0, 100.0)}
+        # from legged_lab.assets.bsrl_conventions import load_bsrl_joint_limits
+        # urdf_joint_limits = load_bsrl_joint_limits(self.scene.robot.spawn.asset_path)
+        # self.actions.joint_pos.clip = {name: urdf_joint_limits[name] for name in JOINT_NAMES}
+        # 保留实际关节的机械限位、限位惩罚和执行器力矩/速度/功率限制。
+        self.actions.joint_pos.clip = None
         self.actions.joint_pos.joint_names = JOINT_NAMES
         self.actions.joint_pos.preserve_order = True
 
@@ -576,9 +624,20 @@ class BSRLAmpEnvCfg(LocomotionAmpEnvCfg):
             weight=0.0,
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=JOINT_NAMES)},
         )
-        self.rewards.dof_acc_l2.weight = -1.25e-7
-        self.rewards.action_rate_l2.weight = -0.005
-        self.rewards.dof_pos_limits.weight = -0.5
+        # 历史 AMP 平滑参数保留；后续新环境按用户要求对齐 mimic。
+        # self.rewards.dof_acc_l2.weight = -1.25e-7
+        # self.rewards.action_rate_l2.weight = -0.005
+        self.rewards.dof_acc_l2.weight = -1.0e-6
+        self.rewards.action_rate_l2.weight = -0.1
+        self.rewards.action_smoothness = RewTerm(func=amp_mdp.ActionSecondOrderL2, weight=-1.0e-3)
+        # 此奖励惩罚实际关节角越过软限位，不是策略目标角越过硬限位。
+        # 历史权重 -0.5；2026-09-14 按用户要求对齐 T1/mimic 的 -5.0。
+        self.rewards.dof_pos_limits.weight = -5.0
+        # Auxiliary motor/ball coordinates are NOT policy joints: preserve the
+        # 12-D joint acceleration/position-limit reward contracts. Torque cost
+        # remains the sum of actually applied efforts (8 direct + 4 motors).
+        self.rewards.dof_acc_l2.params["asset_cfg"] = SceneEntityCfg("robot", joint_names=JOINT_NAMES)
+        self.rewards.dof_pos_limits.params["asset_cfg"] = SceneEntityCfg("robot", joint_names=JOINT_NAMES)
         self.rewards.joint_vel_limits = RewTerm(
             func=il_mdp.joint_vel_limits,
             weight=0.0,
@@ -633,6 +692,12 @@ class BSRLAmpEnvCfg(LocomotionAmpEnvCfg):
             "asset_cfg": SceneEntityCfg("robot", joint_names=JOINT_NAMES, preserve_order=True),
             "height_offset": 0.0,
         }
+        # Retain the original randomization scope. Independently perturbing rod
+        # frames/ball gains would change the mechanism rather than motor errors.
+        for event_name in ("add_joint_default_pos", "actuator_gains", "joint_params", "joint_friction"):
+            getattr(self.events, event_name).params["asset_cfg"] = SceneEntityCfg("robot", joint_names=JOINT_NAMES)
+        self.events.body_mass.params["asset_cfg"] = SceneEntityCfg("robot", body_names="(base_link|link_.*)")
+        self.events.physics_material.params["asset_cfg"] = SceneEntityCfg("robot", body_names="(base_link|link_.*)")
 
         # 终止条件：基座过低、姿态异常或基座接触地面时结束当前 episode。
         self.terminations.base_height.func = amp_mdp.base_height_below_minimum

@@ -87,3 +87,20 @@ def state_estimator_label(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg) -> to
     """
     asset: Articulation = env.scene[asset_cfg.name]
     return torch.cat((base_height(env, asset_cfg), asset.data.root_lin_vel_b), dim=-1)
+
+
+def wbtest_estimator_label(
+    env: ManagerBasedEnv, asset_cfg: SceneEntityCfg, sensor_cfg: SceneEntityCfg,
+    force_threshold: float = 1.0,
+) -> torch.Tensor:
+    """Run46/47 targets: height, body velocity, L/R contact, L/R foot height.
+
+    Both selectors must resolve exactly two feet in left/right order. Foot
+    height means link-origin height relative to env origin, not sole clearance.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    contact = foot_contact(env, sensor_cfg, force_threshold)
+    height = foot_height_w(env, asset_cfg)
+    if contact.shape[-1] != 2 or height.shape[-1] != 2:
+        raise ValueError("wbtest estimator labels require exactly two ordered feet.")
+    return torch.cat((base_height(env, asset_cfg), asset.data.root_lin_vel_b, contact, height), dim=-1)

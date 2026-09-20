@@ -188,6 +188,8 @@ def test_step_exports_terminal_obs_and_keeps_post_reset_disc_obs() -> None:
     env.episode_length_buf = torch.zeros(2, dtype=torch.long)
     env.common_step_counter = 0
     env._reset_idx = lambda env_ids: setattr(env, "_last_reset_ids", env_ids.clone())
+    physics_callback_steps = []
+    env._before_physics_callbacks = (lambda: physics_callback_steps.append(env._sim_step_counter),)
 
     obs, rewards, terminated, time_outs, extras = env.step(torch.tensor([[0.1], [0.2]]))
 
@@ -199,6 +201,7 @@ def test_step_exports_terminal_obs_and_keeps_post_reset_disc_obs() -> None:
     assert torch.equal(time_outs, torch.tensor([False, False]))
     assert torch.equal(rewards, torch.tensor([1.0, 2.0]))
     assert torch.equal(env._last_reset_ids, torch.tensor([0]))
+    assert physics_callback_steps == [1, 2]  # not called by the extra post-reset scene write
 
 
 def test_step_previews_only_configured_terminal_obs_groups() -> None:

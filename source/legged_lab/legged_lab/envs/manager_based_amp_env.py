@@ -22,9 +22,16 @@ class ManagerBasedAmpEnv(ManagerBasedAnimationEnv):
     """AMP environment with preview-based terminal observation export."""
 
     cfg: ManagerBasedAmpEnvCfg
+    _before_physics_callbacks: tuple = ()
 
     def __init__(self, cfg: ManagerBasedAmpEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg=cfg, render_mode=render_mode, **kwargs)
+        # Only explicitly clocked assets opt in. Serial BSRL/T1 keep their
+        # original actuator path, including all legacy reset semantics.
+        self._before_physics_callbacks = tuple(
+            asset.begin_physics_step for asset in self.scene.articulations.values()
+            if hasattr(asset, "begin_physics_step")
+        )
 
     def _merge_terminal_obs(
         self,
@@ -129,6 +136,8 @@ class ManagerBasedAmpEnv(ManagerBasedAnimationEnv):
             self._sim_step_counter += 1
             # set actions into buffers
             self.action_manager.apply_action()
+            for before_physics_step in self._before_physics_callbacks:
+                before_physics_step()
             # set actions into simulator
             self.scene.write_data_to_sim()
             # simulate

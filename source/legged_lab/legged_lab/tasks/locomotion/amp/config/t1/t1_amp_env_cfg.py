@@ -15,7 +15,9 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
 
 from legged_lab import LEGGED_LAB_ROOT_DIR
-from legged_lab.assets.men_t1 import T1_ACTION_CLIP, T1_ACTION_SCALE, T1_CFG, T1_JOINT_NAMES
+from legged_lab.assets.men_t1 import T1_ACTION_SCALE, T1_CFG, T1_JOINT_NAMES
+# Historical URDF-inset target clipping, retained for old-run replay:
+# from legged_lab.assets.men_t1 import T1_ACTION_CLIP
 from legged_lab.state_est import observations as state_est_obs
 from legged_lab.tasks.locomotion.amp.amp_env_cfg import CommandsCfg, LocomotionAmpEnvCfg, ObservationsCfg
 import legged_lab.tasks.locomotion.amp.mdp as mdp
@@ -217,9 +219,9 @@ class T1ObservationsCfg(ObservationsCfg):
         # Actor ablation: key-body positions remain privileged critic inputs and
         # part of the AMP discriminator, but are not exposed to the deployed policy.
         key_body_pos_b = None
-        # Deployment ablation: the actor no longer requires a world-yaw estimate
-        # or a stateful integral of the commanded yaw rate.  Keep the original
-        # definition here for future comparisons; the critic remains unchanged.
+        # Historical resetmatch baseline includes actor heading. The explicit
+        # train.py --t1_no_actor_heading_baseline experiment disables only this
+        # policy term, retaining the critic term and auditing the saved baseline.
         heading_error = ObsTerm(
             func=mdp.integrated_heading_error,
             params={"command_name": "base_velocity"},
@@ -321,7 +323,9 @@ class T1ObservationsCfg(ObservationsCfg):
             self.enable_corruption = False
             self.concatenate_terms = True
 
-    state_est_label: StateEstLabelCfg = StateEstLabelCfg()
+    # Enabled only by ``train.py --use_estimator``.  Ordinary T1 AMP runs do
+    # not compute simulator-only estimator labels or instantiate an estimator.
+    state_est_label: StateEstLabelCfg | None = None
 
     @configclass
     class DiscriminatorCfg(ObservationsCfg.DiscriminatorCfg):
@@ -392,14 +396,18 @@ class T1AmpRewardsCfg:
     lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=0.0)
     ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.05)
     dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-2.0e-6)
-    # The tracking task in wbt_est has several dense reference rewards that offset its
-    # stronger smoothness costs. AMP does not, so keep these two costs at the native AMP
-    # scale; otherwise they dominate both the velocity and style rewards at initialization.
-    dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-1.0e-7)
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.005)
+    # Historical AMP smoothness weights, retained for old-run comparison:
+    # dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-1.0e-7)
+    # action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.005)
+    # Match wbt_est T1 mimic for subsequent runs; existing processes are unchanged.
+    dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-1.0e-6)
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.1)
+    action_smoothness = RewTerm(func=mdp.ActionSecondOrderL2, weight=-1.0e-3)
     dof_pos_limits = RewTerm(
         func=mdp.joint_pos_limits,
-        weight=-1.0,
+        # Match wbt_est T1 mimic: penalize actual joint positions beyond soft limits.
+        # Historical AMP value: -1.0. This is not a penalty on the policy target.
+        weight=-5.0,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=list(T1_JOINT_NAMES), preserve_order=True)},
     )
     feet_slide = RewTerm(
@@ -465,7 +473,10 @@ class T1AmpEnvCfg(LocomotionAmpEnvCfg):
         self.episode_length_s = 10.0
 
         self.actions.joint_pos.scale = T1_ACTION_SCALE
-        self.actions.joint_pos.clip = T1_ACTION_CLIP
+        # Historical 5%-inset URDF target clipping retained for comparison:
+        # self.actions.joint_pos.clip = T1_ACTION_CLIP
+        # Allow PD targets beyond joint limits; physical limits and actuator limits remain.
+        self.actions.joint_pos.clip = None
         self.actions.joint_pos.joint_names = list(T1_JOINT_NAMES)
         self.actions.joint_pos.preserve_order = True
 

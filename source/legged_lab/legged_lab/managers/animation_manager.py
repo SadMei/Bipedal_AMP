@@ -13,6 +13,7 @@ from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 
 from .animation_manager_cfg import AnimationTermCfg
 from .motion_data_manager import MotionDataTerm
+from .motion_command_categories import command_category_ids
 
 if TYPE_CHECKING:
     from legged_lab.envs import ManagerBasedAnimationEnv
@@ -46,6 +47,10 @@ class AnimationTerm(ManagerTermBase):
             )
             if self.cfg.command_motion_patterns is None:
                 raise ValueError("command_motion_patterns is required when command_name is configured")
+            # Opt-in standing category; all historical six-category tasks retain
+            # their original zero-command -> forward fallback.
+            if "standing" in self.cfg.command_motion_patterns:
+                required_categories = (*required_categories, "standing")
             missing_categories = set(required_categories) - set(self.cfg.command_motion_patterns)
             if missing_categories:
                 raise ValueError(f"Missing command-conditioned motion categories: {sorted(missing_categories)}")
@@ -64,6 +69,7 @@ class AnimationTerm(ManagerTermBase):
                     "lateral_right": (self.motion_data_term.motion_mean_root_vel_b, 1),
                     "rotate_left": (self.motion_data_term.motion_mean_root_ang_vel_b, 2),
                     "rotate_right": (self.motion_data_term.motion_mean_root_ang_vel_b, 2),
+                    "standing": (self.motion_data_term.motion_mean_root_vel_b, 0),
                 }
                 self._command_category_motion_speeds = {
                     category: torch.abs(values[motion_ids, component])
@@ -199,25 +205,15 @@ class AnimationTerm(ManagerTermBase):
             )
 
         scale_x, scale_y, scale_yaw = self.cfg.command_component_scales
-        scores = torch.stack(
-            (
-                torch.clamp(command[:, 0], min=0.0) / scale_x,
-                torch.clamp(-command[:, 0], min=0.0) / scale_x,
-                torch.clamp(command[:, 1], min=0.0) / scale_y,
-                torch.clamp(-command[:, 1], min=0.0) / scale_y,
-                torch.clamp(command[:, 2], min=0.0) / scale_yaw,
-                torch.clamp(-command[:, 2], min=0.0) / scale_yaw,
-            ),
-            dim=1,
-        )
         categories = tuple(self._command_category_motion_ids)
-        category_ids = torch.argmax(scores, dim=1)
-        command_speeds = torch.max(scores, dim=1).values
+        category_ids, command_speeds = command_category_ids(
+            command, self.cfg.command_component_scales, standing="standing" in categories)
         if self.cfg.match_command_speed:
             # Convert the normalized dominant-component score back to physical
             # units before comparing it with the measured clip speeds.
             category_scales = torch.tensor(
-                (scale_x, scale_x, scale_y, scale_y, scale_yaw, scale_yaw),
+                (scale_x, scale_x, scale_y, scale_y, scale_yaw, scale_yaw)
+                + ((1.,) if "standing" in categories else ()),
                 device=command.device,
                 dtype=command.dtype,
             )
