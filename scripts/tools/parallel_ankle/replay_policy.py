@@ -8,7 +8,6 @@ from __future__ import annotations
 import argparse
 from collections import deque
 import hashlib
-import importlib.util
 import json
 from pathlib import Path
 import re
@@ -21,16 +20,14 @@ import onnxruntime as ort
 import yaml
 
 if __package__:
+    from . import bsrl_observation as obs_contract
     from .build_models import SERIAL_XML, full_robot_xml
     from .real_ankle import CALIBRATION, CORE, HERE, WORKSPACE, Geometry, RobotCore, closure_gaps
 else:
+    import bsrl_observation as obs_contract
     from build_models import SERIAL_XML, full_robot_xml
     from real_ankle import CALIBRATION, CORE, HERE, WORKSPACE, Geometry, RobotCore, closure_gaps
 
-spec = importlib.util.spec_from_file_location(
-    "bsrl_observation_contract", WORKSPACE / "mjw_simtool/scripts/sim2simBSRL/run_sim2sim_standalone.py")
-obs_contract = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(obs_contract)
 JOINTS = obs_contract.JOINT_NAMES
 BASELINE_RUN = WORKSPACE / "Bipedal_AMP/logs/rsl_rl/bsrl_amp/2026-09-07_14-49-15_noestimator_mirror01_friction0515_formal1_8192"
 
@@ -302,6 +299,8 @@ def main():
     parser.add_argument("--auxiliary-mass",type=float,default=.001)
     parser.add_argument("--equality-timeconst",type=float,default=.002)
     parser.add_argument("--ankle-limit",type=float)
+    parser.add_argument("--kp-scale", type=float, default=1.0,
+                        help="Multiply joint-space KP for this diagnostic only")
     args=parser.parse_args()
     if args.output.exists(): raise FileExistsError(args.output)
     if args.video and args.video.exists(): raise FileExistsError(args.video)
@@ -324,6 +323,9 @@ def main():
     core=None if args.model_xml else RobotCore()
     sim=Replay(args.run,args.topology,core,args.command,args.auxiliary_mass,args.equality_timeconst,args.ankle_limit,
                model_xml=args.model_xml,history_length=history_length)
+    if not np.isfinite(args.kp_scale) or args.kp_scale <= 0:
+        raise ValueError("--kp-scale must be a finite positive number")
+    sim.nominal["stiffness"] = sim.nominal["stiffness"] * args.kp_scale
     args.output.mkdir(parents=True)
     decimation=round(sim.nominal["policy_dt"]/sim.model.opt.timestep)
     renderer=writer=None

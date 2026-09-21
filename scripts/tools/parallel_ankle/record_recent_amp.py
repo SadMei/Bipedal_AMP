@@ -18,7 +18,7 @@ import subprocess
 import sys
 import traceback
 
-from ._paths import REPO_ROOT, WORKSPACE
+from ._paths import CLOSED_ANKLE_ROOT, REPO_ROOT
 
 RUNS = [
     ('serial_mirror','2026-09-14_17-51-40_','Serial / mirror 0.1'),
@@ -56,7 +56,7 @@ def simulate(record,output):
         return dict(label=record['label'],stage='export_failed',returncode=rc)
     rc=run_command(['scripts.tools.parallel_ankle.replay_policy','--run',record['run'],
         '--onnx',str(folder/'export/policy.onnx'),'--checkpoint',record['checkpoint'],
-        '--model-xml',str(WORKSPACE/'BSRL_urdf/xml/bsrl_closed_ankles.xml'),
+        '--model-xml',str(CLOSED_ANKLE_ROOT/'xml/bsrl_closed_ankles.xml'),
         '--topology','closed','--command','0.6','0','0','--seconds','30','--label',record['description'],
         '--output',str(folder/'replay')],folder/'replay.log')
     summary=folder/'replay/summary.json'

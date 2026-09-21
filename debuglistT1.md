@@ -196,7 +196,7 @@ run：`2026-08-28_15-27-58_forward_no_keybody_estimator_criticpriv8_noheading_ya
 - 非指令匹配任务按总帧数采样全部动作；指令匹配任务先按命令选类别，再在类别内按帧数采样。
 - `random_fetch=True` 只控制判别器随机抽取参考片段，不会直接瞬移真实机器人；录像跳变来自 episode 终止后的 reset 或仍开启的训练扰动。
 
-## 当前默认训练配置（2026-09-01）
+## 当前默认训练配置（更新至 2026-09-14）
 
 ### 资产与控制
 
@@ -204,7 +204,7 @@ run：`2026-08-28_15-27-58_forward_no_keybody_estimator_criticpriv8_noheading_ya
 - `men_t1_path_25dofs_collision_feet_points.urdf` 等其他原始 0809 URDF 仍保存在同一目录，仅供显式对照，不再作为默认资产。
 - 只保留一个 T1 注册任务：`LeggedLab-Isaac-AMP-T1-v0`。原 AlignedBaseline、0809、ForwardCommandMatched 和 Play task id 均已删除；播放统一用同一个任务配合 `play.py --nominal_eval`。
 - 平地、`8192 env`、episode `10 s`；物理频率 `200 Hz`（`dt=0.005 s`），策略频率 `50 Hz`（decimation `4`）。
-- 25 维关节位置动作，scale `0.25`；目标按 URDF 硬限位向内收缩 5%。
+- 25 维关节位置动作，scale `0.25`；2026-09-14 起取消目标角裁剪（`joint_pos.clip=None`），raw-action clip 也为 `None`。保留实际关节机械限位和执行器限制；历史 5% 内缩目标限制保留为注释及资产工具，供旧 run 追溯。
 - 执行器延迟 `0–4` 个物理步，即 `0–20 ms`。
 
 ### Actor、Critic 与 AMP
@@ -233,16 +233,18 @@ run：`2026-08-28_15-27-58_forward_no_keybody_estimator_criticpriv8_noheading_ya
 
 | 模块 | 当前输入 | 历史与维度 | 备注 |
 |---|---|---:|---|
-| Policy / Estimator 输入 | base 角速度 `3`、root 旋转 6D `6`、速度指令 `3`、25 关节位置 `25`、关节速度 `25`、上一动作 `25`、积分航向误差 sin/cos `2` | `89 × 5 = 445` | 有训练噪声；Actor 不含 6 个关键刚体位置，也不直接观察 base 线速度 |
-| Estimator 输出 | base 高度 `1`、base-frame 线速度 `3` | 当前帧 `4` | MLP `[256,128]`；监督损失系数 `1.0`，Actor 梯度不反传到 Estimator |
-| Actor MLP | Policy 历史 `445` + Estimator 预测 `4` | `449` | `[512,256,128]` ELU |
+| Policy 输入 | base 角速度 `3`、root 旋转 6D `6`、速度指令 `3`、25 关节位置 `25`、关节速度 `25`、上一动作 `25`、积分航向误差 sin/cos `2` | `89 × 5 = 445` | 有训练噪声；Actor 不含 6 个关键刚体位置，也不直接观察 base 线速度 |
+| Estimator | 默认关闭 | `0` | 2026-09-07 起 T1 基线不再给 Actor 拼接 estimator 预测量；相关实现保留供历史 checkpoint 使用 |
+| Actor MLP | Policy 历史 `445` | `445` | 普通 ActorCritic，`[512,256,128]` ELU |
 | Critic 主观测 | Policy 的无噪声版本 + base 线速度 `3` + 6 个关键刚体相对 base 位置 `18` | `110 × 5 = 550` | 不使用 Estimator 预测值 |
 | Critic Estimator 特权 | base 高度 `1` | `1 × 5 = 5` | base 线速度真值已在 Critic 主观测中 |
 | Critic 奖励特权 | 双足接触 `2`、双足世界系 XY 速度 `4`、非允许接触计数 `1`、pelvis 接触标志 `1` | `8 × 5 = 40` | 精确覆盖 feet slide、undesired contact 和 base-contact termination；Critic 总输入 `595` |
-| AMP agent 判别器 | root 旋转 6D `6`、base 角速度 `3`、关节位置/速度 `25+25`、6 个关键刚体位置 `18`、base 线速度 `3`、速度指令 `3` | `83 × 4 = 332` | 参考动作类别会按当前速度指令匹配 |
+| AMP agent 判别器 | root 旋转 6D `6`、base 角速度 `3`、关节位置/速度 `25+25`、6 个关键刚体位置 `18`、base 线速度 `3`、速度指令 `3` | `83 × 4 = 332` | 参考动作按当前指令匹配运动类别，不匹配类别内速度大小 |
 | AMP demo 判别器 | 对应的参考 root 旋转/角速度、关节状态、关键点、root 线速度及参考速度指令 | `83 × 4 = 332` | 与 agent 侧严格同维同序 |
 
 ### 当前奖励表
+
+下表是当前源码默认值；2026-09-14 新加入的 mimic 平滑参数尚未启动训练，已运行 run 仍使用各自冻结 YAML。
 
 | 奖励项 | 权重 | 当前含义/参数 |
 |---|---:|---|
@@ -253,30 +255,33 @@ run：`2026-08-28_15-27-58_forward_no_keybody_estimator_criticpriv8_noheading_ya
 | `zero_command_heading_hold_exp` | 关闭（原 `+0.5`） | 积分目标航向精度不足；当前正在运行的 4D run 仍保留启动时配置 | -->
 | `lin_vel_xy_error_excess_l2` | `-0.25` | XY 误差超过 `0.25 m/s` 后平方惩罚，excess 上限 `2.0 m/s` |
 | `flat_orientation_l2` / `ang_vel_xy_l2` | `-1.0 / -0.05` | 抑制机身倾斜与 roll/pitch 角速度 |
-| `dof_torques_l2` / `dof_acc_l2` | `-2e-6 / -1e-7` | 力矩和关节加速度正则 |
-| `action_rate_l2` / `dof_pos_limits` | `-0.005 / -1.0` | 动作平滑与关节限位惩罚 |
+| `dof_torques_l2` / `dof_acc_l2` | `-2e-6 / -1e-6` | 力矩惩罚保持不变；实际关节加速度平方惩罚对齐 mimic（原 `-1e-7`） |
+| `action_rate_l2` / `dof_pos_limits` | `-0.1 / -5.0` | 一阶 raw-action 变化平方惩罚（原 `-0.005`）；实际角度越过 90% 软限位后的线性惩罚 |
+| `action_smoothness` | `-0.001` | 新增二阶 raw-action 差分平方和；各环境独立维护历史并在 episode reset 清零，不裁剪目标或直接惩罚动作幅度 |
 | `feet_slide` / `undesired_contacts` | `-0.1 / -0.1` | 足底滑动与非允许刚体接触惩罚 |
 | `termination_penalty` | `-200` | 非超时终止惩罚 |
 | 当前关闭/删除项 | `0` 或不存在 | `lin_vel_z_l2=0`；无 `feet_air_time`、无 `arm_energy` |
-| AMP style reward | scale `5.0` | LSGAN；最终 task/style 混合比例 `0.4/0.6`；当前在训 4D run 仍为启动时的 `6.0` |
+| AMP style reward | scale `5.0` | LSGAN；最终 task/style 混合比例 `0.4/0.6` |
 
 ### 当前训练参数表
 
 | 类别 | 当前值 |
 |---|---|
-| 环境与控制 | `8192 env`；物理 `200 Hz`（`dt=0.005`）；策略 `50 Hz`（decimation `4`）；episode `10 s`；25 维位置动作，scale `0.25`，目标裁到 URDF 限位内侧 5%；执行器延迟 `0–4` 物理步 |
-| 指令与课程 | 每 `10 s` 重采样，无站立指令，`heading_command=False`；固定 `50%` 为 `vy=wz=0` 的直行样本；其余样本只激活后退/左横移/右横移/左转/右转中的一个分量，避免无对应参考的复合指令；第 `0/8000/16000` 轮依次使用 `vx=(0.2,0.6)/(-0.55,0.6)/(-0.7,0.8)`、`vy=0/(-0.45,0.35)/(-0.6,0.5)`、yaw `=0/(-1.15,1.2)/(-2.05,1.9)`，实际采样再裁到对应动作类别的实测速率覆盖范围 |
-| 参考动作 | 18 个 PKL；从 PKL root 位姿自动计算每个 clip 的 body-frame 平移速度或 yaw rate，先按命令方向选择类别，再在类别内选择速度最接近的 clip；AMP 连续 `4` 帧 |
+| 环境与控制 | `8192 env`；物理 `200 Hz`（`dt=0.005`）；策略 `50 Hz`（decimation `4`）；episode `10 s`；25 维位置动作，scale `0.25`，PD 目标角及 raw action 均不裁剪；执行器延迟 `0–4` 物理步 |
+| 指令与课程 | 每 `10 s` 重采样，无站立指令，`heading_command=False`；固定 `50%` 为 `vy=wz=0` 的直行样本，其余环境沿用连续范围采样，允许复合指令；第 `0/8000/16000` 轮依次使用 `vx=(0.2,0.6)/(-0.55,0.6)/(-0.7,0.8)`、`vy=0/(-0.45,0.35)/(-0.6,0.5)`、yaw `=0/(-1.15,1.2)/(-2.05,1.9)` |
+| 参考动作 | 18 个 PKL；先按当前指令选择前进/后退/横移/旋转类别，再在类别内按帧数权重随机选择 clip，不匹配指令速度大小；AMP 连续 `4` 帧 |
 | Rollout 与保存 | 每环境每轮 `24` 步；默认 `30000` 轮；每 `500` 轮保存；日志根 `men_t1_amp` |
 | PPO | epochs `5`、mini-batches `16`、LR `1e-4 adaptive`、clip `0.2`、gamma `0.99`、lambda `0.95`、desired KL `0.01`、max grad norm `1.0`、entropy `0.001` |
-| 网络 | Actor/Critic `[512,256,128]` ELU；初始动作 std `1.0`，采用 log-std 参数化；Actor 增广观测归一化关闭，Estimator 输入使用运行均值/方差归一化；Estimator `[256,128]` ELU |
+| 网络 | 普通 ActorCritic；Actor/Critic `[512,256,128]` ELU；初始动作 std `1.0`，采用 log-std 参数化；Actor 观测归一化关闭；Estimator 默认关闭 |
 | AMP | 判别器 `[1024,512]` ELU；LR `2e-6`；replay buffer `1000`；gradient penalty `10`；trunk/linear weight decay `1e-4/1e-2`；LSGAN；每 `100` 轮检查最佳 style checkpoint（warm-up `250` 轮） |
+| 左右镜像 | 当前源码启用 T1 sagittal mirror loss，系数 `0.1`，不做 data augmentation；镜像 run 之外的已启动进程均使用各自冻结的 `symmetry_cfg` |
 | 随机化 | 材料摩擦 `0.5–1.5`、质量 `×0.9–1.1`、Kp/Kd 和 armature `×0.8–1.2`、零位 `±0.05 rad`、COM x `±0.025 m`/y-z `±0.05 m`、关节摩擦 `0–0.05`；reset 外力 `±15 N`/力矩 `±4 Nm`；每 `2.5–5 s` 六维速度推扰 |
 | Reset / 终止 | 从匹配的参考动作随机帧复位；10 秒超时、pelvis 接触、base 高度 `<0.5 m` 或倾角 `>60°` 终止 |
 
-## Estimator 迁移状态（已完成训练验证）
+## Estimator 迁移状态（历史可选，当前默认关闭）
 
-- 已将 `wbt_est` 的监督状态估计结构移入 AMP；Estimator、标签和 Critic 特权组现在是主任务默认配置，不再为它注册或切换独立任务。
+- 已将 `wbt_est` 的监督状态估计结构移入 AMP，但 T1 主任务默认仍使用普通 ActorCritic；仅在同一任务显式使用 `--use_estimator` 时创建 Estimator、拼接 4D 预测量并计算监督损失，不另注册任务。
+- 2026-09-07 起 `--use_estimator` 对齐 `wbt_est` 的归一化方式：Estimator 原始 445D 输入、Estimator 输出拼接后的 449D Actor 输入、595D Critic 输入分别使用独立 EmpiricalNormalization；AMP 判别器继续使用其原有独立归一化。
 - Estimator 输入当前 445 维可部署 Actor 历史观测，MLP 为 `[256, 128]`，现输出 4 维：`base_height(1) + base_lin_vel_b(3)`。旧版足接触和足高函数仍保留，但不再进入 AMP Estimator 合同。
 - Actor 内部输入为 `445 + 4 = 449` 维；Critic 输入为主观测 `550`、基座高度历史 `5` 和奖励相关接触特权 `40`，共 `595` 维。PPO Actor 梯度默认不进入 estimator，estimator 由仿真真值监督损失训练。
 - 2026-09-01 补齐 Critic 的奖励特权：接触标志与足部真实 XY 速度对应 `feet_slide`，非允许接触计数对应 `undesired_contacts`，pelvis 接触对应终止惩罚。T1 没有 `feet_air_time` 奖励，因此未加入无用的足部计时观测。
@@ -308,6 +313,9 @@ run：`2026-08-28_15-27-58_forward_no_keybody_estimator_criticpriv8_noheading_ya
 | `speedmatched_no_policy_heading_estimator4d_formal1_8192` | 0809 | 2026-09-03 启动，30000 轮 | 基于速度匹配版本，仅从 Policy 移除 2D `integrated_heading_error`；Critic 保留该特权量，4D Estimator 和其余配置不变 |
 | `speedmatched_no_policy_heading_estimator4d_feetpoints_formal1_8192` | 0809 四点足底 | 2026-09-03 启动，30000 轮 | 与上一 run 并行的接触拓扑单变量对照；Policy 同为 435D、Estimator 同为 4D，其余训练参数不变。启动时临时加载 `men_t1_path_25dofs_collision_feet_points.urdf`，环境创建后源码默认已恢复为普通足底 URDF，不影响现有进程 |
 | `resetmatch_rewardpriv_initialheadingvel_estimator4d_feetpoints_formal1_8192` | 0809 四点足底 | 2026-09-03 启动，30000 轮 | 以效果较好的 `2026-09-01_16-15-31_resetmatch...` 为严格基线，仅替换足底接触拓扑；类别内按帧权重随机选参考 clip，不做速度最近邻；Policy 恢复 2D integrated heading，输入 445D |
+| `resetmatch_rewardpriv_initialheadingvel_noestimator_normalfoot_formal1_8192` | 0809 普通足底 | 2026-09-07 启动，30000 轮 | 严格回归 model29999/resetmatch 基线；移除 4D Estimator 并恢复普通非四点足底 URDF，其余奖励、课程、随机化和 AMP/PPO 参数保持一致；Actor 445D、Critic 595D、判别器 332D |
+| `resetmatch_rewardpriv_initialheadingvel_estimator4d_allnorm_normalfoot_formal1_8192` | 0809 普通足底 | 2026-09-07 启动，30000 轮 | 与上一无 Estimator 基线并行；加入 4D Estimator，并开启 Estimator 输入、增广 Actor 输入及 Critic 输入归一化；无镜像损失，其余条件不变 |
+| `resetmatch_rewardpriv_initialheadingvel_noestimator_mirror01_normalfoot_formal1_8192` | 0809 普通足底 | 2026-09-07 启动，30000 轮 | 严格基于无 Estimator/无归一化基线，仅加入左右镜像策略均值动作 MSE，系数 `0.1`；不做对称数据增广，避免改变 rollout 分布 |
 
 > 注意：已经启动的进程会继续使用各自日志 YAML 中记录的资产，不会因当前源码默认切换为 0809 而热更新。之后新启动的 T1 训练才默认使用 0809。
 
@@ -318,6 +326,55 @@ run：`2026-08-28_15-27-58_forward_no_keybody_estimator_criticpriv8_noheading_ya
 - 四点足底对照 run 的冻结 `env.yaml` 与 baseline 相比，除资产路径外只多出用于显式记录旧语义的 `single_axis_commands: false`、`motion_speed_animation: null` 和 `match_command_speed: false`；训练网络、奖励和其余环境参数一致。
 - 四点足底环境创建完成后，源码资产默认已恢复为普通 `men_t1_path_25dofs_collision.urdf`；已启动进程仍使用冻结的四点 URDF。
 
+### 2026-09-07：回归无 Estimator、普通足底基线
+
+- 当前主基线仍是录像 `t1_resetmatch_model29999_forward06_nominal_30s-step-0.mp4` 对应的 `2026-09-01_16-15-31_resetmatch_rewardpriv_initialheadingvel_estimator4d_formal1_8192`，但按本轮要求只移除 Estimator，并使用该基线原本采用的普通非四点 `men_t1_path_25dofs_collision.urdf`。
+- 1024 env × 100 轮 smoke 已验证 Actor `445D`、Critic `595D`、AMP 判别器 `332D`，无 Estimator MLP/Loss、NaN、OOM 或维度错误；所有奖励、课程、随机化和 reset 类别匹配均生效。smoke 日志已移入系统回收站。
+- 正式 run 为 `2026-09-07_11-25-43_resetmatch_rewardpriv_initialheadingvel_noestimator_normalfoot_formal1_8192`，8192 env × 30000 轮；仍使用唯一任务 `LeggedLab-Isaac-AMP-T1-v0`，没有新增注册任务。
+- 全归一化 Estimator 对照为 `2026-09-07_11-52-46_resetmatch_rewardpriv_initialheadingvel_estimator4d_allnorm_normalfoot_formal1_8192`。其冻结配置确认 Actor/Critic normalization 均为 `true`，Estimator 输入 normalizer 也包含在 checkpoint；启动后 Estimator loss 正常下降。
+- 镜像对照为 `2026-09-07_11-54-45_resetmatch_rewardpriv_initialheadingvel_noestimator_mirror01_normalfoot_formal1_8192`。T1 的 25D 关节、445D 五帧 Policy 观测、速度指令、root 姿态和积分航向误差均按 sagittal reflection 显式映射；映射执行两次严格恢复原张量。该组保持 Estimator/Actor/Critic normalization 关闭，只增加 `0.1 × mirror MSE`。
+- 上述三组冻结 `env.yaml` 均确认加载同一个普通非四点 URDF：`Men_T1_0809_new_shoe/urdf/men_t1_path_25dofs_collision.urdf`。
+
+### 2026-09-14：取消目标角裁剪 + 实际角度限位惩罚 -5 的正式对照
+
+- **动机**：用户希望允许策略通过更大的 PD 目标误差请求更大力矩。核查本工程 G1 AMP 与 wbt_est T1 mimic 后，确认二者没有显式按 URDF 裁剪 PD 目标；目标裁剪是控制设计选择，不是 AMP 必须修复的缺陷。
+- **仅两项行为变化**：取消 T1 `T1_ACTION_CLIP` 的 5% 内缩目标裁剪，改为 `self.actions.joint_pos.clip=None`，同时显式记录 `agent.clip_actions=None`（原 raw action 已不裁剪）；`dof_pos_limits` 从 `-1.0` 改为 `-5.0`，按用户要求对齐 mimic。PPO 概率比 `clip_param=0.2` 不变。旧目标裁剪语句保留为注释，不删除资产中读取 URDF 的工具。
+- **限位语义**：策略仍输出 `default_pos + 0.25 × action` 位置目标；实际关节的 URDF 机械限位、90% 软限位惩罚、执行器力矩/速度限制和 PD 保持。`dof_pos_limits` 惩罚实际角度，而非目标超限量；更大目标只会在执行器未饱和时继续增加请求力矩，不能突破执行器限制。
+- **其余沿用当前主配置**：0809 新鞋普通非四点足底 URDF；无 Estimator，Actor/Critic normalization 均关闭；Actor 445D、Critic 595D、判别器 332D；镜像损失 `0.1`、无 data augmentation；reset/参考匹配动作类别、不匹配速度；50% 直行样本、`heading_command=False`；AMP scale `5.0`、task/style `0.4/0.6`、PPO entropy `0.001`。
+- **正式 run**：`logs/rsl_rl/men_t1_amp/2026-09-14_21-52-57_resetmatch_noestimator_mirror01_noclip_jointlimit5_formal1_8192`。唯一任务 `LeggedLab-Isaac-AMP-T1-v0`，从头训练 `8192 env × 30000` 轮，seed `42`；物理 GPU `3`，tmux `t1_amp_noclip_jointlimit5_formal1`，PID `4161920`。启动日志：`logs/launches/t1_amp_noclip_jointlimit5_formal1_20260914.log`，没有 smoke run。
+- **启动验收**：运行时 `env.yaml` / `agent.yaml` 确认两层 action clip 均为 `null`、`dof_pos_limits=-5.0`、无 Estimator/归一化、普通非四点 URDF、镜像损失 `0.1`。已生成 `model_0.pt`（20,809,859 bytes）及 TensorBoard 事件，进入正式 PPO 循环。第 8 轮限位奖励 `-0.0118`、value loss `0.0491`、判别器 loss `0.3072`、action std `0.99`，无 NaN/OOM/Traceback；初期 episode 仍短，当前仅证明成功启动，不作为最终步态质量结论。
+- **隔离**：没有停止任何旧训练。GPU 0/1 的 wbt_est T1 mimic、GPU 2 的 BSRL PD 对照均保持运行；没有修改 wbt_est、URDF/XML 或实机代码。BSRL 仅同步取消目标角裁剪，未启动新的 BSRL 训练，也没有把 BSRL 的限位奖励改成 `-5.0`。
+
+### 2026-09-14：T1/BSRL 平滑奖励对齐 mimic（只改配置，暂不训练）
+
+- **用户指定范围**：只对齐目标裁剪、实际角度限位、一阶动作变化、二阶动作平滑、实际关节加速度这五项；没有移植手臂功率、足滑或逐帧参考跟踪奖励，也没有修改任务注册、Actor/Critic/判别器观测、PD、URDF、电机限制或 AMP 混合比例。
+- **T1 新默认**：PD 目标 clip=None、raw action clip=None；`dof_pos_limits=-5.0` 保持；`action_rate_l2: -0.005 → -0.1`；`dof_acc_l2: -1e-7 → -1e-6`；新增 `action_smoothness=-0.001`。旧权重/语句保留为注释。
+- **二阶实现**：从 wbt_est 的 `ActionSecondOrderL2` 移植到本仓库 `amp/mdp/rewards.py`，不依赖 wbt_est 包。每控制步计算 `sum((a_t - 2*a_(t-1) + a_(t-2))²)`，使用 ActionManager 的 raw action，不用经缩放/延迟后的 PD 目标；新增缓存只保存上一上一动作，按环境 reset，不跨 episode 混用。与 mimic 一样使用零填充的 episode 初始历史，不额外屏蔽开局两步。
+- **奖励/观测合同**：函数返回未加权、未乘 dt 的每环境标量，由现有 RewardManager 统一乘 `weight × step_dt`，再进入原 AMP `0.4 task + 0.6 style`。一/二阶平滑约束变化而非恒定动作幅度，现有 5 帧动作观测不变，不添加新 Policy 真值。BSRL 也使用同一函数，G1 未启用该项。
+- **验证**：新增 `source/legged_lab/test/test_amp_action_smoothness.py`，12 项 CPU 回归通过：12/25 维动作、8192 环境随机序列、线性变化/恒定大动作、部分与全量 reset、独立实例/历史复制、配置权重及 G1 隔离。测试执行生产奖励类的数值与 reset 方法，不启动 Kit 或训练；已核对 AMP 的两条 reset 路径都会调用 RewardManager.reset，后者清理本奖励状态。
+- **实验隔离**：没有新 run、没有 smoke、没有停止旧训练；`2026-09-14_21-52-57_resetmatch_noestimator_mirror01_noclip_jointlimit5_formal1_8192` 继续沿用启动时的一阶 `-0.005`、加速度 `-1e-7`、无二阶项。后续只有用户再次要求启动，才用本节新参数创建训练。本次只是数值和接入检查，未评估新权重的步态/收敛效果。
+
+### 2026-09-15：仅移除 Actor 积分航向观测，正式训练
+
+- **用户范围**：先启动 T1；BSRL 的新奖励实验暂不启动，也不修改其采样比例或现有进程。
+- **严格基线**：`2026-09-14_21-52-57_resetmatch_noestimator_mirror01_noclip_jointlimit5_formal1_8192`，不是 9/1 含 Estimator 的视频版，也不是 9/3 speedmatched 分支。
+- **唯一训练差异**：`observations.policy.heading_error=None`，Policy/Actor `445D → 435D`；Critic 主组仍为 `550D`（含 `10D` 航向历史），与另外两个特权组拼接后为 `595D`；判别器仍为 `332D`。不把航向转移到 Actor 的其他输入中，也不增加 Estimator。
+- **其余不变**：普通足底 0809 URDF、PD、随机化、reset/参考类别匹配、50% 直行采样及课程、AMP/PPO、mirror `0.1`、无增广/归一化、无目标裁剪、关节限位惩罚 `-5.0`。严格保留基线一阶平滑 `-0.005`、关节加速度 `-1e-7`、无二阶项，不混入 9/14 后改过但未在此基线使用的平滑参数。
+- **防回归入口**：同一 `LeggedLab-Isaac-AMP-T1-v0`，增加 `train.py --t1_no_actor_heading_baseline <run>`；恢复上述基线平滑参数后，逐项核对完整环境与 agent 配置，发现其他变化即在创建环境前拒绝训练。默认配置仍保留历史基线语义，避免影响其他启动入口；过期的“Actor 已不需要航向”注释已纠正。T1 镜像映射同时兼容 `435D/445D`，保留原 `445D` 数值行为。
+- **正式 run**：`logs/rsl_rl/men_t1_amp/2026-09-15_19-40-00_resetmatch_noactorheading_noestimator_mirror01_noclip_jointlimit5_formal1_8192`；物理 GPU `6`，`8192 env × 30000` 轮，从头训练，seed `42`，每 `500` 轮保存；tmux `t1_amp_noactorheading_formal1`，启动 PID `899045`。
+- **入口/日志**：`scripts/rsl_rl/launch_t1_no_actor_heading_formal1.sh`；`logs/launches/t1_amp_noactorheading_formal1_20260915_retry2.log`。首次预检因 Isaac 创建场景前后的 prim 路径展开、地形派生字段表示不同而退出，未创建训练环境；校验器已按 InteractiveScene 的确定性展开规则比较，首次日志保留。
+- **验收**：27 项 CPU 回归通过；实际新旧 `params/env.yaml`、`agent.yaml` 比较除 Policy heading 与输出目录/名称外无差异。`model_0.pt` 实测 Actor 首层 `(512,435)`、Critic 首层 `(512,595)`，无 Estimator，参数有限；已进入第 13 轮且 PPO、AMP、mirror loss 有限。这里只验收启动，不代表步态或收敛效果。基线 YAML SHA256 与差异审计保存在新 run 的 `params/heading_ablation_audit.yaml`。
+- **隔离**：未停止任何已有训练；未改 BSRL 模型/奖励/观测、URDF/XML 或真机代码。后续录制此 run 必须从其冻结 YAML 恢复 `435D` Policy，不能用历史 `445D` 默认直接播放。
+
+### 2026-09-15：补录 9/3 11:02 无 Actor 航向观测版本
+
+- 按用户引用的 9/3 行选择普通足底 `2026-09-03_11-02-15_speedmatched_no_policy_heading_estimator4d_formal1_8192`，使用本地最新编号 checkpoint `model_24500.pt`（不是 29999，也不是 11:50 的四点足底版本）。
+- 实际网络：Policy 435D，无 heading；保留旧版 4D Estimator，Actor 内部 439D、Critic 595D；此旧版本无 mirror。完整恢复冻结配置后进行名义评估，并恢复其旧目标角裁剪。
+- 视频 `videos/t1_20260903_1102_noactorheading_model24500_forward06_nominal_30s_20260915-step-0.mp4`：固定 vx=0.6、vy=wz=0，仿真 30 秒，MP4 1499 帧/50fps/29.98秒，1280×720，完整解码通过。无摔倒重置；末位置约 x=17.70m、y=0.32m，末航向约 +1.60°（日志四位小数四元数估算）。
+- 报告 `reports/t1_20260903_1102_model24500_noactorheading_video_20260915_retry2/`，包括源配置校验、实际回放配置、checkpoint SHA256 和预览。没有覆盖旧 ONNX 或修改正在训练的 T1。
+- 新增显式回放参数 `--restore_saved_t1_config` 与 `--replay_audit_dir`，避免当前默认 445D/no-clip 语义混入旧 435D 策略。固定回放指令禁用训练专用混合/单轴/动作速度范围限制，首次旧速度匹配缓存不兼容的失败尝试日志独立保留。
+- 配置恢复/固定指令、435D/445D 镜像及平滑奖励共 33 项 CPU 测试通过。无 heading 的旧策略本次也能较直地前进，但它与 resetmatch model29999 还存在速度匹配和轮数等差异，不作为单变量因果结论。
+
 历史 T1 run 已统一移动到 `logs/rsl_rl/men_t1_amp/`。run 之间的 URDF、观测、奖励和训练参数差异以本表、时间线及各 run 自带的 `params/*.yaml` 区分，不再通过多个 experiment 目录或 task id 区分。
 
 ## 已确认问题与跨实验结论
@@ -327,7 +384,7 @@ run：`2026-08-28_15-27-58_forward_no_keybody_estimator_criticpriv8_noheading_ya
 - **已修正：类别内速度错配与复合指令无参考（2026-09-01）。** 每个 PKL 的代表速度由 root 位姿差分后转换到 body frame 自动计算，参考 clip 改为同方向内按速度最近邻选择；指令采样范围限制在该方向现有动作的速度覆盖内。阶段 2/3 的非直行部分只采一个运动轴，固定约 50% 前进，其余五类各约 10%。阶段 3 的 512 环境审计得到 `253/60/42/52/52/53`（前进/后退/左横移/右横移/左转/右转），没有复合指令；同时修复了高级索引 `uniform_()` 未写回导致“直行”子集混入负向 vx 的旧问题。
 - **已修正：速度奖励坐标系。** 当前指令和速度奖励均使用 base frame。
 - **已修正：判别器缺少平移信息。** 当前 T1 判别器包含根线速度；指令匹配版本进一步包含速度指令。
-- **已修正：动作目标撞限位。** 关节目标使用当前 URDF 生成的 5% 内缩限位。
+- **目标角裁剪属于实验选择，不再作为必须修复项。** 历史 T1 使用 URDF 生成的 5% 内缩目标限位；2026-09-14 按用户要求撤去，允许 PD 目标超出机械行程，同时把实际角度软限位惩罚提高到 `-5.0`。不能用目标超限本身证明策略异常，需结合实际姿态、力矩饱和和播放效果判断。
 - **已修正：录像配置会误导判断。** 正式评价应使用 `--nominal_eval`，关闭训练随机化、推力、噪声、延迟和参考帧 reset。
 - **有效但未完全解决：按指令选择参考类别。** 已能看到前进模特步特征，但连续性和抗踉跄能力仍不足。
 - **训练指标不能代替视觉和部署评价。** 多个 run 都有接近 100% time-out 和较低 XY 误差，但步态风格、关节余量与持续稳定性差异很大。

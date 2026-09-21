@@ -7,13 +7,13 @@
 ## 误删后的模型恢复（2026-09-15）
 
 脚本迁移后，原工作区 `parallel_ankle/` 数据目录已缺失。现已利用保留的生成逻辑
-和训练工程内的 CAD 分件备份，把整机及左右单踝 XML 重建到
-[BSRL_urdf/xml](../../../../BSRL_urdf/xml/README_parallel_ankle.md)，配套网格按原字节恢复，
+和训练工程内的 CAD 分件备份，把整机及左右单踝 XML 重建到工程内部的
+`source/legged_lab/legged_lab/data/Robots/BSRL_closed_ankle/xml/`，配套网格按原字节恢复，
 使用相对路径。详细来源及验证见该目录中的 `parallel_ankle_recovery.json`。
 
 这是重建恢复，不是原 XML 的逐字节找回；旧轨迹、历史结果、归档示意 XML 和
 原 C++/YAML 未恢复。策略回放的默认路径仍要求缺失的 `bsrl_ankle_core_flat`。
-显式传入 `--model-xml ../BSRL_urdf/xml/bsrl_closed_ankles.xml` 可在核对恢复清单后
+显式传入工程内 `BSRL_closed_ankle/xml/bsrl_closed_ankles.xml` 可在核对恢复清单后
 使用 CAD 几何回放，不声称完成原 C++/YAML 核验；`--onnx` 可指定确切的 ONNX，
 并核对其 checkpoint 校验和，避免误用另一个迭代的默认导出。
 新入口 `restore_models.py` 仅显式从 CAD 重建模型，不代替硬件解算器或历史回放。
@@ -43,15 +43,15 @@
 
 ```bash
 python scripts/tools/parallel_ankle/build_models.py \
-  --output-dir ../parallel_ankle/results/NEW_models
+  --output-dir /tmp/bsrl_parallel_ankle_models
 python scripts/tools/parallel_ankle/parallel_ankle.py --side right --mode PR --no-view
 python scripts/tools/parallel_ankle/parallel_ankle.py --side left --mode AB --no-view
 python scripts/tools/parallel_ankle/check_mounting.py \
-  --plot ../parallel_ankle/results/NEW_mounting.png
+  --plot /tmp/bsrl_parallel_ankle_mounting.png
 python scripts/tools/parallel_ankle/replay_policy.py --topology closed \
-  --seconds 30 --command 0.6 0 0 --output ../parallel_ankle/results/NEW_closed
+  --seconds 30 --command 0.6 0 0 --output /tmp/bsrl_parallel_ankle_replay
 MUJOCO_GL=egl python scripts/tools/parallel_ankle/render_replay.py \
-  ../parallel_ankle/results/NEW_closed videos/NEW_closed.mp4
+  /tmp/bsrl_parallel_ankle_replay videos/NEW_closed.mp4
 python -m pytest -q scripts/tools/parallel_ankle
 ```
 
@@ -69,13 +69,16 @@ python -m pytest -q scripts/tools/parallel_ankle
 
 ## 模型、资源与依赖
 
-默认工作区为 `Bipedal_AMP` 的父目录：
+模型路径都在 `Bipedal_AMP` 仓库内：
 
-- `parallel_ankle/`：旧数据目录已缺失；原有脚本的默认结果路径仍指向这里，历史数据不会自动恢复。
-- `BSRL_urdf/`：原 URDF 与 CAD mesh 不变；恢复的 XML 在 `xml/`，CAD 分件在 `meshes/parallel_ankle/`；预览 URDF 在 `urdf/`。
-- `mjw_simtool/scripts/sim2simBSRL/`：沿用原串联场景与观测定义。
+- `source/legged_lab/legged_lab/data/Robots/BSRL_urdf/`：训练使用的串联 URDF、MJCF 与本地 mesh。
+- `source/legged_lab/legged_lab/data/Robots/BSRL_closed_ankle/`：闭链 XML、恢复清单与本地 mesh。
+- `scripts/tools/parallel_ankle/bsrl_observation.py`：仓库内 sim2sim 观测定义，不再导入 `mjw_simtool`。
 - `Bipedal_AMP/logs/rsl_rl/bsrl_amp/`：原策略及训练参数。
 - `bsrl_ankle_core_flat/`：原始 `AnkleKinematics.hpp`、`AnkleKinematics.cpp` 和 `bsrl_bridge_bringup.yaml`；可通过 `BSRL_ANKLE_CORE_DIR` 覆盖目录。
+
+网格不由本仓库的 Git 跟踪。新环境只需将 `BSRL_urdf` 资产仓库中的
+`urdf/`、`xml/`、`meshes/` 复制到上述机器人数据目录；训练核心路径保持不变。
 
 Python 依赖为 `numpy`、`scipy`、`PyYAML`、`mujoco`、`trimesh`、`onnxruntime`、
 `matplotlib`，录像另需 `imageio`、`imageio-ffmpeg`、`Pillow`；测试另需 `pytest`

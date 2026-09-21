@@ -7,12 +7,12 @@ import numpy as np
 import pytest
 
 if __package__:
-    from ._paths import REPO_ROOT, WORKSPACE
+    from ._paths import CLOSED_ANKLE_ROOT, REPO_ROOT
     from .real_ankle import Geometry
     from .render_replay import ankle_camera, video_label
     from .replay_policy import Replay, action_target, load_nominal, policy_history_length, policy_provenance, recovered_model_xml, sha
 else:
-    from _paths import REPO_ROOT, WORKSPACE
+    from _paths import CLOSED_ANKLE_ROOT, REPO_ROOT
     from real_ankle import Geometry
     from render_replay import ankle_camera, video_label
     from replay_policy import Replay, action_target, load_nominal, policy_history_length, policy_provenance, recovered_model_xml, sha
@@ -56,7 +56,7 @@ def test_changed_recovered_model_is_rejected(tmp_path):
 @pytest.fixture(scope="module")
 def replay():
     run = REPO_ROOT / "logs/rsl_rl/bsrl_amp/2026-09-14_17-51-40_pd_hip150_knee200_kd2_ankle100kd1_noestimator_mirror01_formal1_8192"
-    xml = WORKSPACE / "BSRL_urdf/xml/bsrl_closed_ankles.xml"
+    xml = CLOSED_ANKLE_ROOT / "xml/bsrl_closed_ankles.xml"
     if not xml.is_file() or not (run / "params/env.yaml").is_file():
         pytest.skip("Recovered model and frozen September 14 training configuration required")
     return Replay(run, "closed", None, [.6, 0, 0], model_xml=xml)

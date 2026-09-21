@@ -77,9 +77,10 @@ def test_external_paths_and_cpp_interfaces(importer):
     assert bags.REPO_ROOT == ankle.REPO_ROOT == REPO_ROOT
     assert bags.WORKSPACE_ROOT == ankle.WORKSPACE == REPO_ROOT.parent
     assert bags.RESULTS_ROOT == bags.BAG_ROOT / "analysis/results_20260914"
-    assert ankle.DATA_DIR == real.HERE == cad.HERE == REPO_ROOT.parent / "parallel_ankle"
-    assert cad.URDF == REPO_ROOT.parent / "BSRL_urdf/urdf/export.urdf"
-    assert models.SERIAL_XML == REPO_ROOT.parent / "mjw_simtool/scripts/sim2simBSRL/assets/bsrl_scene.xml"
+    robot_data = REPO_ROOT / "source/legged_lab/legged_lab/data/Robots"
+    assert ankle.DATA_DIR == real.HERE == cad.HERE == robot_data / "BSRL_closed_ankle"
+    assert cad.URDF == robot_data / "BSRL_urdf/urdf/export.urdf"
+    assert models.SERIAL_XML == robot_data / "BSRL_urdf/xml/bsrl_scene.xml"
     assert approximate.MODEL == ankle.DATA_DIR / "parallel_ankle_approximate.xml"
     assert approximate.OUTPUT_DIR == ankle.DATA_DIR / "results/approximate"
     assert (TOOLS_ROOT / "bsrl_rosbags/ankle_batch.cpp").is_file()

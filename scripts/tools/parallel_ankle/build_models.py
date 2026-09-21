@@ -8,13 +8,13 @@ import xml.etree.ElementTree as ET
 import numpy as np
 
 if __package__:
+    from ._paths import SERIAL_XML
     from .real_ankle import HERE, WORKSPACE, Geometry, RobotCore, standalone_xml, xml_string
     from .cad_assets import export_visuals
 else:
+    from _paths import SERIAL_XML
     from real_ankle import HERE, WORKSPACE, Geometry, RobotCore, standalone_xml, xml_string
     from cad_assets import export_visuals
-
-SERIAL_XML = WORKSPACE / "mjw_simtool/scripts/sim2simBSRL/assets/bsrl_scene.xml"
 
 
 def full_robot_xml(core, serial_xml=SERIAL_XML, auxiliary_mass=.001, equality_timeconst=.002,

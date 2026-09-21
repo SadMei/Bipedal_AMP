@@ -13,11 +13,11 @@ from scipy.spatial.transform import Rotation
 import trimesh
 
 if __package__:
-    from .real_ankle import Geometry, RobotCore, WORKSPACE
+    from ._paths import URDF
+    from .real_ankle import Geometry, RobotCore
 else:
-    from real_ankle import Geometry, RobotCore, WORKSPACE
-
-URDF = WORKSPACE / "BSRL_urdf/urdf/export.urdf"
+    from _paths import URDF
+    from real_ankle import Geometry, RobotCore
 
 
 def cad_mesh(side, part):

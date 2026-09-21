@@ -16,11 +16,13 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 if __package__:
-    from .real_ankle import Geometry, RobotCore, WORKSPACE, point_z, vec, xml_string
+    from ._paths import URDF
+    from .real_ankle import Geometry, RobotCore, point_z, vec, xml_string
 else:
-    from real_ankle import Geometry, RobotCore, WORKSPACE, point_z, vec, xml_string
+    from _paths import URDF
+    from real_ankle import Geometry, RobotCore, point_z, vec, xml_string
 
-SOURCE = WORKSPACE / "BSRL_urdf/urdf/export.urdf"
+SOURCE = URDF
 OUTPUT = SOURCE.with_name("export_closed_ankle_preview.urdf")
 COLORS = {"long": ".15 .55 .95 1", "short": ".98 .48 .12 1", "foot": ".15 .85 .3 1"}
 

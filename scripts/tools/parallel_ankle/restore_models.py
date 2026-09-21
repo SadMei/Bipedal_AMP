@@ -17,12 +17,12 @@ import mujoco
 import numpy as np
 
 if __package__:
-    from ._paths import REPO_ROOT, SCRIPT_DIR, URDF, WORKSPACE
+    from ._paths import CLOSED_ANKLE_ROOT, REPO_ROOT, SCRIPT_DIR, URDF
     from .build_models import SERIAL_XML, full_robot_xml
     from .cad_assets import asset_directory, load_cad
     from .real_ankle import Geometry, closure_gaps, standalone_xml, xml_string
 else:
-    from _paths import REPO_ROOT, SCRIPT_DIR, URDF, WORKSPACE
+    from _paths import CLOSED_ANKLE_ROOT, REPO_ROOT, SCRIPT_DIR, URDF
     from build_models import SERIAL_XML, full_robot_xml
     from cad_assets import asset_directory, load_cad
     from real_ankle import Geometry, closure_gaps, standalone_xml, xml_string
@@ -182,7 +182,7 @@ def restore(robot_root):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--robot-root", type=Path, default=WORKSPACE / "BSRL_urdf",
+    parser.add_argument("--robot-root", type=Path, default=CLOSED_ANKLE_ROOT,
                         help="Bundle root containing xml/ and meshes/; existing files are preserved")
     args = parser.parse_args()
     result = restore(args.robot_root)

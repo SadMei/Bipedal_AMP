@@ -31,9 +31,30 @@
 **/.neptune/*
 **/*.pt
 **/*.log
-**/*.urdf
 docker/artifacts/
 *.tmp
+/reports/
+/BSRL关节参数.jpg
+
+# Local robot geometry. XML/URDF model definitions remain tracked, while
+# geometry is distributed from the dedicated BSRL_urdf asset repository.
+*.STL
+*.stl
+*.obj
+*.dae
+*.mtl
+*.ply
+*.fbx
+*.glb
+*.gltf
+
+# Motion/reference datasets are local training inputs, not source code.
+*.pkl
+*.pickle
+*.npz
+*.npy
+*.bvh
+source/legged_lab/legged_lab/data/MotionData/
 
 # Isaac-Sim packman
 _isaac_sim*

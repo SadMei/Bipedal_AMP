@@ -21,9 +21,9 @@ from scipy.spatial.transform import Rotation
 import yaml
 
 if __package__:
-    from ._paths import CALIBRATION, CORE, DATA_DIR as HERE, SCRIPT_DIR, WORKSPACE
+    from ._paths import CALIBRATION, CORE, DATA_DIR as HERE, SCRIPT_DIR, URDF, WORKSPACE
 else:
-    from _paths import CALIBRATION, CORE, DATA_DIR as HERE, SCRIPT_DIR, WORKSPACE
+    from _paths import CALIBRATION, CORE, DATA_DIR as HERE, SCRIPT_DIR, URDF, WORKSPACE
 
 
 def vec(x):
@@ -347,7 +347,7 @@ def standalone_xml(geometry, auxiliary_mass=.001, equality_timeconst=.002):
                   size=".015", contype="0", conaffinity="0")
     carrier = ET.SubElement(shank, "body", name="pitch_carrier")
     ET.SubElement(carrier, "joint", name="ankle_pitch", axis="0 1 0", range="-.6 .6", armature=".01")
-    urdf = ET.parse(WORKSPACE / "BSRL_urdf/urdf/export.urdf").getroot()
+    urdf = ET.parse(URDF).getroot()
 
     def add_inertial(body, name):
         inertial = urdf.find(f"link[@name='{name}']/inertial")
