@@ -1,0 +1,287 @@
+\documentclass[10pt,twocolumn]{article}
+
+\usepackage[letterpaper,top=0.72in,bottom=0.82in,left=0.67in,right=0.67in,columnsep=0.24in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb,mathtools,bm}
+\usepackage{booktabs,multirow}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{balance}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+\usepackage[nameinlink,capitalise,noabbrev]{cleveref}
+\usepackage[numbers,sort&compress]{natbib}
+
+\newcommand{\method}{MimicWM}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\cN}{\mathcal{N}}
+\newcommand{\cD}{\mathcal{D}}
+\newcommand{\cL}{\mathcal{L}}
+\newcommand{\cF}{\mathcal{F}}
+\newcommand{\diag}{\operatorname{diag}}
+\newcommand{\stopgrad}{\operatorname{sg}}
+\newcommand{\quat}{\bm{Q}}
+\newcommand{\trans}{^{\mathsf T}}
+
+\title{\textbf{MimicWM: External-Mocap-Free Humanoid Motion Imitation\\with a Physics-Informed World Model}}
+\author{Junwei Mei \and Yangfeng Yan \and Xiaoxu Zhang \and Tianhong Yang}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Whole-body imitation policies can reproduce expressive reference motions in simulation, yet their performance often degrades after deployment because contact, actuation, and structural dynamics are imperfectly modeled. Existing physics-alignment approaches commonly require time-aligned full-body states or external motion capture on the physical robot, while generic learned world models accumulate physically implausible errors on contact-rich humanoid motion. We present \method{}, a framework that couples motion imitation with a physics-informed residual world model and adapts a pretrained policy without external motion capture, force plates, or real-world residual-force labels. Hardware logs are converted into transition replay using only deployed signals: joint encoders, a pelvis IMU, commanded joint targets, and an estimator trained with privileged simulation labels. A yaw-equivariant ensemble predicts body-frame generalized residual forces that are integrated by a differentiable MJX full-physics step. The force predictor is learned end-to-end from a multi-step hybrid likelihood over physical state, estimator outputs, and soft foot contact. A separate motion clock advances the reference without treating it as predicted dynamics, enabling the original imitation observations, rewards, and termination rules to be reconstructed during imagined rollouts. Policy adaptation uses short, safety-truncated rollouts under the elite-mean dynamics and a KL anchor to the deployed policy. The resulting formulation turns ordinary proprioceptive deployment logs into a task-consistent adaptation signal while retaining rigid-body and contact priors.
+\end{abstract}
+
+\section{Introduction}
+\label{sec:introduction}
+
+Physics-based motion imitation has become a practical route to agile and expressive humanoid control. Given a kinematic reference, modern reinforcement-learning systems can acquire robust tracking policies in massively parallel simulation and transfer them to physical hardware~\cite{peng2018deepmimic,peng2021amp,rudin2022learning,gu2024humanoidgym}. The same recipe nevertheless exposes a persistent mismatch: a policy is optimized against one simulator's contact solver, actuator model, latency, collision geometry, and inertial parameters, but is deployed on a robot whose effective dynamics differ. Domain randomization improves robustness~\cite{tobin2017domain,peng2018dynamics}, but deliberately broadening the training distribution does not identify the dynamics actually encountered after deployment. The resulting policy may remain upright while losing motion fidelity, contact timing, or smoothness.
+
+Adapting the simulator from physical experience offers a complementary solution. Trajectory-matching methods can identify static parameters, action corrections, or residual dynamics~\cite{jiang2021simgan,heiden2021neuralsim,he2025asap}. For floating-base humanoids, however, direct state matching usually assumes a globally referenced base pose and velocity. Those quantities are difficult to recover accurately from onboard sensing and are often supplied by a motion-capture system. This requirement restricts the capture area, complicates calibration, and makes routine data collection costly. Distribution matching relaxes temporal alignment and external-state requirements~\cite{dao2026distribution}, but does not directly furnish a differentiable, phase-conditioned transition model for optimizing a whole-body imitation policy.
+
+Model-based reinforcement learning provides the missing interface: a learned transition model can reuse a small replay buffer to produce many policy updates~\cite{chua2018pets,janner2019mbpo,hafner2023dreamerv3}. Pure neural transition models are brittle for humanoids because small errors in height, orientation, and contact compound quickly. Physics-informed models instead retain known rigid-body structure and learn only unresolved effects~\cite{raissi2019pinn,cranmer2020lagrangian,lutter2019deep,levy2024three}. LIFT extends this principle to humanoid fine-tuning, but its real-world realization requires externally measured base height~\cite{huang2026lift}. Moreover, locomotion-oriented world models do not by themselves specify how a reference motion, phase-dependent reward, onboard estimator, and deployable policy observation should evolve together.
+
+This paper asks: \emph{can a physics-informed world model adapt a humanoid motion-imitation policy from standard deployment logs, without instrumenting the physical robot with motion capture?} The key is to distinguish three objects that are often conflated: the physical robot state, the policy-facing estimated state, and the exogenous reference motion. We reconstruct the first two from proprioception and a simulation-trained estimator, while advancing the third with a separate motion clock. A residual-force model corrects nominal differentiable physics; it never predicts the reference and never requires residual-force targets.
+
+We instantiate this idea as \method{}. Its contributions are:
+\begin{itemize}
+    \item We formulate motion-conditioned model-based adaptation with an explicit separation between predicted robot dynamics and exogenous reference context. This separation permits exact reconstruction of the pretrained imitation interface during synthetic rollouts.
+    \item We introduce an external-mocap-free replay construction that uses joint encoders, pelvis IMU, commanded targets, and a deployment estimator trained only with privileged simulation labels. No real-world global pose, contact-force, or residual-force annotation is required.
+    \item We develop a yaw-equivariant physics-informed ensemble that predicts body-frame generalized residual forces and is trained through a differentiable full MJX step using a 20-step hybrid likelihood over continuous physical state, estimated kinematics, and soft contacts.
+    \item We couple the model to conservative PPO adaptation through motion-phase resets, physics-based termination, elite-mean dynamics, and a frozen-policy KL anchor, confining policy exploration to the world model.
+\end{itemize}
+
+\section{Related Work}
+\label{sec:related}
+
+\subsection{Humanoid Motion Imitation}
+
+DeepMimic established reinforcement learning as a scalable mechanism for tracking reference clips while preserving physical plausibility~\cite{peng2018deepmimic}. Adversarial Motion Priors (AMP) replaced explicit per-frame tracking with a learned style objective~\cite{peng2021amp}, and reusable skill embeddings expanded motion diversity~\cite{peng2022ase}. Perpetual Humanoid Control improved recovery and long-horizon control for simulated avatars~\cite{luo2023phc}. Recent systems transfer increasingly diverse whole-body behaviors to real humanoids through large-scale simulation, retargeting, teleoperation, or diffusion-guided control~\cite{he2024teleop,he2025asap,liao2025beyondmimic}. These methods primarily address policy representation, motion diversity, and robust pretraining. \method{} instead starts from an already deployable imitation policy and uses physical logs to adapt the transition model and then the policy. The reference clip may originate from motion capture, video, or animation; our claim is specifically that \emph{the physical robot need not be tracked by an external motion-capture system during adaptation}.
+
+\subsection{Sim-to-Real Adaptation without External State}
+
+Dynamics randomization samples simulator parameters during training to obtain policies robust to modeling error~\cite{tobin2017domain,peng2018dynamics}. Online system identification conditions the policy on inferred environment properties~\cite{yu2017preparing,kumar2022adapting}, while simulator adaptation uses deployment data to update parameters or learned corrections~\cite{jiang2021simgan,heiden2021neuralsim}. ASAP learns an action-delta model from aligned simulated and real humanoid trajectories~\cite{he2025asap}. Proprioceptive distribution matching removes the need for time-aligned global state and external sensing when optimizing a simulator discrepancy objective~\cite{dao2026distribution}. \method{} shares the goal of practical onboard-only adaptation, but learns a transition model directly from causal one-step tuples. Phase alignment uses measured joint configurations and the known reference clock, not a global physical trajectory. The learned model can therefore generate phase-consistent synthetic experience for policy optimization rather than only selecting simulator parameters.
+
+\subsection{World Models and Physics-Informed Dynamics}
+
+Probabilistic ensembles support uncertainty-aware model-based control~\cite{chua2018pets}; MBPO limits rollout length to control model bias~\cite{janner2019mbpo}; and Dreamer learns behavior in compact latent dynamics~\cite{hafner2023dreamerv3}. Such general models offer flexibility but do not guarantee rigid-body consistency. Physics-informed neural networks~\cite{raissi2019pinn}, Hamiltonian and Lagrangian networks~\cite{greydanus2019hamiltonian,cranmer2020lagrangian}, and Deep Lagrangian Networks~\cite{lutter2019deep} encode progressively stronger mechanics priors. Semi-structured residual dynamics enabled real-world quadruped learning from minutes of data~\cite{levy2024three}. LIFT combines a residual dynamics model with large-scale humanoid pretraining and confines stochastic exploration to its world model~\cite{huang2026lift}. Our formulation differs in three respects: it targets reference-conditioned whole-body imitation, removes the need for external base-height measurements by reusing the deployable estimator, and uses differentiable full-step contact dynamics plus an observation-aware hybrid objective rather than a contact-free Lagrangian integration alone.
+
+\section{Problem Formulation}
+\label{sec:problem}
+
+We consider a 25-DoF floating-base humanoid controlled at $50$ Hz by joint-position targets. Let $\rho_t$ denote the state of a fixed reference motion at phase $t$, and let $o_t$ be the deployable policy observation assembled from reference features, proprioception history, previous actions, and estimated quantities. A pretrained stochastic policy $\pi_{\theta_0}(a_t\mid o_t)$ is learned in a nominal simulator and is executed deterministically on hardware using its mean action.
+
+The real transition kernel $P^\star$ is unknown. During adaptation we can record joint position and velocity, pelvis orientation and angular velocity, and commanded joint targets. We cannot assume global root translation, optical body poses, contact forces, or generalized external forces. Given a small real replay $\cD_{\mathrm{real}}=\{(y_t,a_t,y_{t+1},\rho_t)\}$, our objective is to construct a world model $P_\phi$ and adapt the policy while preserving the pretrained behavior:
+\begin{align}
+\max_\theta\quad
+&\E_{\substack{\rho_0\sim p_\rho,\,a_t\sim\pi_\theta\\x_{t+1}\sim P_\phi}}
+\left[\sum_{t=0}^{H-1}\gamma^t r(x_t,a_t,\rho_t)\right]\nonumber\\
+&\quad-\beta\,\E_{o_t}\!\left[D_{\mathrm{KL}}(\pi_\theta\|\pi_{\theta_0})\right],
+\label{eq:objective}
+\end{align}
+where $x_t$ is the reconstructed model state, $r$ is the original imitation reward, and $H=20$. The reference evolves deterministically as $\rho_{t+1}=\Gamma(\rho_t)$ and is not part of the learned physical transition.
+
+\paragraph{Scope of the mocap-free assumption.}
+An offline reference clip is still required by the imitation task. It may be authored or obtained from a human motion dataset such as AMASS~\cite{mahmood2019amass}. The assumption concerns data collected from the \emph{physical robot}: no external camera system or motion-capture ground truth is used to label its transitions.
+
+\section{Method}
+\label{sec:method}
+
+\subsection{Motion-Conditioned State Factorization}
+\label{sec:state}
+
+Each replay frame is factorized as $s_t=(x_t,c_t)$. The 68-dimensional dynamic state is
+\begin{equation}
+x_t=[g_t^b,\omega_t^b,q_t,\dot q_t,\quat_t,v_t^b,h_t,p_t^c,h_t^f],
+\label{eq:dynamic-state}
+\end{equation}
+where $g^b,\omega^b\in\R^3$ are projected gravity and base angular velocity; $q,\dot q\in\R^{25}$ are joint states; $\quat\in\mathbb{S}^3$ is the body-to-world root quaternion; $v^b\in\R^3$ and $h\in\R$ are estimated base velocity and height; and $p^c,h^f\in\R^2$ are soft contact probabilities and foot heights. The 75-dimensional exogenous context is
+\begin{equation}
+c_t=[q_t^{\mathrm{ref}},\dot q_t^{\mathrm{ref}},a_{t-1}].
+\end{equation}
+We retain a three-frame stack $\mathcal{H}_t=(s_{t-2},s_{t-1},s_t)$ to reconstruct the deployed observation and reset histories safely at episode boundaries. The dynamics network itself intentionally reads only the current privileged subset and current action:
+\begin{equation}
+z_t=[\omega_t^b,q_t,\dot q_t,\widetilde{\quat}_t,v_t^b,h_t,a_t]\in\R^{86},
+\label{eq:model-input}
+\end{equation}
+where $\widetilde{\quat}$ is the yaw-removed tilt quaternion. Reference pose, previous action, projected gravity, contacts, and past frames cannot become shortcuts for the residual predictor; they remain available where required for observation, reward, and transition bookkeeping.
+
+This factorization prevents a subtle failure mode in motion-conditioned modeling. If the reference is concatenated to the prediction target, a high-capacity network can learn the motion clock rather than physical response. In \method{}, $P_\phi$ predicts only $x_{t+1}$, while $c_{t+1}$ is advanced explicitly by $\Gamma$ and by the newly issued action.
+
+\subsection{External-Mocap-Free Hardware Replay}
+\label{sec:replay}
+
+Hardware topics are synchronized at policy ticks. Joint states and IMU samples are interpolated to each tick; commands are held with zero-order hold. A deployment command is inverted through the known position-target interface,
+\begin{equation}
+a_t=(q_t^{\mathrm{cmd}}-q^{\mathrm{default}})\oslash s_a,
+\end{equation}
+where $s_a$ is the per-joint action scale. We preserve the causal tuple $(x_t,a_t,x_{t+1})$ and record an identified command-response delay as metadata rather than shifting the action to artificially reduce error.
+
+The unavailable components $(v^b,h,p^c,h^f)$ are produced by the same estimator used by the deployed policy. The estimator consumes a 225-dimensional proprioceptive history and is trained in simulation with privileged labels. Its output is
+\begin{equation}
+\hat e_t=E_\psi(y_{t-k:t})=[\hat h_t,\hat v_t^b,\hat p_t^c,\hat h_t^f]\in\R^8.
+\end{equation}
+On real data, $E_\psi$ is frozen: its predictions become part of the transition state, but are never treated as ground-truth labels for updating the estimator. This choice matches the policy's deployed information state and avoids an unobservable-state mismatch between model rollouts and policy execution.
+
+We align the beginning of each log with the reference by searching the reference joint sequence for the minimum measured joint-position RMSE. This scalar phase registration requires neither global root position nor time-aligned simulation. The initial world yaw is canonicalized, and every quaternion is normalized to a common hemisphere ($Q_w\geq0$). The latter is essential because $\quat$ and $-\quat$ encode the same rotation but appear far apart to a standard normalizer and MLP.
+
+\subsection{Yaw-Equivariant Residual Physics}
+\label{sec:residual}
+
+The nominal transition $\cF_{\mathrm{MJX}}$ reconstructs generalized coordinates and velocities from $x_t$, applies the same PD controller and effort limits as deployment, and advances a MuJoCo/MJX model~\cite{todorov2012mujoco} for 20 substeps at $1$ ms. Rather than replacing the simulator, an ensemble of $K=7$ networks predicts a 31-dimensional generalized residual force:
+\begin{equation}
+(r_{\phi_k}(z_t),\ell_{\phi_k}(z_t))=f_{\phi_k}(z_t),\quad
+r_{\phi_k}\in\R^{6+25},\;\ell_{\phi_k}\in\R^{60}.
+\end{equation}
+Each network has three SiLU MLP layers of widths $(512,512,256)$. The first six residual coordinates act on the floating base and the remaining coordinates act on joints.
+
+World yaw is a task symmetry: rotating the robot and reference together should rotate the trajectory without changing local residual dynamics. We remove yaw from the network orientation input and express the root linear residual $f_t^b$ in the body frame. Before integration it is mapped to MJX coordinates as
+\begin{equation}
+r_t^{\mathrm{MJX}}=
+\begin{bmatrix}
+R(\quat_t)f_t^b & m_t^b & P_j r_t^j
+\end{bmatrix}\trans,
+\label{eq:force-map}
+\end{equation}
+where $m_t^b$ is the local base moment and $P_j$ converts policy joint order to MJCF order. The complete quaternion is retained in the physical state and in \cref{eq:force-map}; only the network input is yaw invariant. The predicted next state is
+\begin{equation}
+\hat x_{t+1}^{(k)}=\cF_{\mathrm{MJX}}(x_t,a_t,r_{\phi_k}(z_t)).
+\label{eq:transition}
+\end{equation}
+Gradients pass through state reconstruction, coordinate transforms, the PD controller, contact integration, and the complete MJX step. Consequently, generalized-force supervision is unnecessary.
+
+\subsection{Observation-Aware Multi-Step Likelihood}
+\label{sec:loss}
+
+A single homogeneous Gaussian is inappropriate for \cref{eq:dynamic-state}: physical coordinates, estimator outputs, and contact probabilities have different semantics. We partition the target as
+\begin{align}
+x_t^p&=[g_t^b,\omega_t^b,q_t,\dot q_t,\quat_t]\in\R^{60},\\
+x_t^e&=[v_t^b,h_t,h_t^f]\in\R^6,\qquad p_t^c\in[0,1]^2.
+\end{align}
+The network predicts log variance only for $x^p$. Let barred variables denote replay-normalized coordinates. For ensemble member $k$, the per-step objective is
+\begin{align}
+\cL_t^{(k)}={}&\frac{1}{60}\sum_i
+\left[(\bar{\hat x}_{t+1,i}^p-\bar x_{t+1,i}^p)^2e^{-\ell_{t,i}^{(k)}}+\ell_{t,i}^{(k)}\right]\nonumber\\
+&+\lambda_e\|\bar{\hat x}_{t+1}^e-\bar x_{t+1}^e\|_2^2
++\lambda_c\operatorname{BCE}(\hat p_{t+1}^c,p_{t+1}^c).
+\label{eq:hybrid-loss}
+\end{align}
+The variance is bounded with differentiable, learnable softplus limits rather than a hard clamp. A small interval regularizer discourages the bounds from expanding solely to reduce negative log likelihood.
+
+Training unrolls \cref{eq:transition} autoregressively for $H=20$:
+\begin{equation}
+\cL_{\mathrm{WM}}=\sum_{k=1}^{K}\sum_{j=1}^{H}w_j\cL_{t+j-1}^{(k)}
++\lambda_b\sum_i(\ell_i^{\max}-\ell_i^{\min}).
+\label{eq:multistep-loss}
+\end{equation}
+At each step, predicted dynamics replace the previous physical frame, while reference joint targets are advanced from the motion provider and the action context is updated. Members receive independent bootstrap samples. Validation ranks members by multi-step state error and selects the best five elites.
+
+After each step, we project the quaternion to unit norm and a canonical hemisphere, reconstruct projected gravity from orientation, and clamp height and soft contacts to their supports. During policy rollout we use the mean residual of the five elites. Predicted variances and ensemble disagreement remain diagnostics; they are not repeatedly sampled into the physical state. This distinction prevents measurement uncertainty from being misinterpreted as process noise at every 20-ms transition.
+
+\subsection{Reconstructing the Mimic Task in the World Model}
+\label{sec:mimic}
+
+The reference provider stores the original motion's joint states and whole-body kinematics. At a reset it samples a phase and aligns the reference root position and yaw with the model state. It then advances exactly one reference frame per policy step. Forward kinematics applied to $\hat x_t$ reconstructs link positions, orientations, and velocities; planar root translation is integrated from predicted body velocity. These quantities reproduce the asymmetric actor and critic observations of the pretrained controller.
+
+The imitation reward is computed analytically rather than learned as a scalar. In compact form,
+\begin{align}
+r_t={}&\sum_{b\in\mathcal{B}}w_b
+\exp[-d_b(\hat x_t,\rho_t)/\sigma_b^2]\nonumber\\
+&-\sum_j\lambda_j c_j(\hat x_{t-1:t},a_{t-1:t})
++r_t^{\mathrm{contact}},
+\label{eq:reward}
+\end{align}
+where $d_b$ covers anchor and relative body pose/velocity tracking, $c_j$ covers action rate, acceleration, joint limits, foot sliding, and other regularizers, and $r^{\mathrm{contact}}$ matches the reference support phase. The same control-step scaling as the source environment is retained. Quantities unavailable under the reduced collision model are omitted explicitly instead of being replaced by learned reward guesses. Thus, transition error cannot be hidden by an independently fitted reward model.
+
+\subsection{Conservative Policy Adaptation}
+\label{sec:policy}
+
+Synthetic rollouts begin from the online motion-reset distribution or replay states with valid reference indices. The actor samples actions inside the model, while the dynamics use the elite-mean residual. A rollout terminates when root height, base speed, torso roll/pitch, joint range, joint speed, tracking error, or numerical finiteness violates a fixed bound. Terminated transitions remain in the batch and stop generalized-advantage bootstrapping; failed environments are immediately reseeded without crossing episode histories.
+
+We optimize a clipped PPO objective~\cite{schulman2017ppo} because it preserves the deployed actor, critic, estimator, and optimizer state:
+\begin{align}
+\cL_\pi(\theta)={}&-\E_t\left[\min\left(r_t(\theta)\hat A_t,
+\operatorname{clip}(r_t(\theta),1-\epsilon,1+\epsilon)\hat A_t\right)\right]\nonumber\\
+&+c_v\cL_V-c_H\mathcal{H}(\pi_\theta)
++\beta D_{\mathrm{KL}}(\pi_\theta(\cdot|o_t)\|\pi_{\theta_0}(\cdot|o_t)),
+\label{eq:ppo}
+\end{align}
+where $r_t(\theta)$ is the policy likelihood ratio. For the conservative setting, the simulation-trained estimator and both actor-side observation normalizers are frozen; either the final actor layer or the full policy MLP is opened. An adaptive learning-rate rule monitors update KL, while the last term anchors the policy to the original hardware-tested controller. The source checkpoint is immutable and adapted policies are saved separately.
+
+\begin{algorithm}[t]
+\caption{External-mocap-free mimic adaptation}
+\label{alg:method}
+\begin{algorithmic}[1]
+\Require pretrained mimic policy $\pi_{\theta_0}$, estimator $E_\psi$, nominal MJX model $\cF$, reference provider $\Gamma$
+\State Execute mean actions of $\pi_{\theta_0}$; record encoders, IMU, and joint commands
+\State Synchronize policy ticks; infer $\hat e_t=E_\psi(y_{t-k:t})$; build $\cD_{\mathrm{real}}$
+\State Initialize a residual ensemble $\{f_{\phi_k}\}_{k=1}^7$
+\For{each world-model update}
+    \State sample contiguous 20-step sequences and member-wise bootstraps
+    \State autoregress $\cF+f_{\phi_k}$ while advancing reference context with $\Gamma$
+    \State update $\phi$ using \cref{eq:multistep-loss}
+\EndFor
+\State select five validation elites; freeze $P_\phi$ and anchor $\pi_{\theta_0}$
+\For{each policy update}
+    \State sample motion phases and reset-consistent model states
+    \State collect 20-step, safety-truncated elite-mean rollouts
+    \State update actor and critic using \cref{eq:ppo}
+\EndFor
+\State \Return adapted policy $\pi_\theta$
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Why the Construction Is Identifiable Enough for Adaptation}
+\label{sec:analysis}
+
+The residual force itself is not uniquely identifiable: multiple force sequences can explain the same sampled transition. Policy adaptation does not require recovering the true contact wrench, only a locally predictive transition map. Three structural choices reduce degenerate solutions. First, the nominal simulator explains known inertial, actuation, and contact effects, leaving the network to model a correction rather than the entire transition. Second, the 31-dimensional force bottleneck can affect the state only through valid generalized coordinates and the simulator integrator. Third, the 20-step loss penalizes corrections that fit one step but generate implausible closed-loop dynamics.
+
+The estimator introduces a different limitation: its outputs are an information state, not physical ground truth. We therefore supervise them with deterministic losses and never inject their apparent uncertainty as repeated process noise. More importantly, policy and model consume the same estimator convention. This consistency is preferable to training on externally measured states that disappear at deployment, although estimator bias can still become world-model bias.
+
+\section{Discussion and Limitations}
+\label{sec:discussion}
+
+\paragraph{What ``mocap-free'' does and does not mean.}
+\method{} removes external motion capture from robot-side adaptation. It does not eliminate the reference motion required by an imitation task, nor does it claim globally accurate base translation from proprioception. The framework reconstructs only the state needed by its transition, observation, reward, and termination contracts. Tasks whose reward depends on an unobserved object or absolute world position require an additional sensor or a latent model.
+
+\paragraph{Estimator dependence.}
+The height, base-velocity, contact, and foot-height channels inherit errors from $E_\psi$. A biased estimate can be self-consistent with the deployed actor yet physically inaccurate. Evaluations should therefore report both policy-facing errors and any available diagnostic ground truth, while ensuring that diagnostic sensors do not enter training. Joint training of the estimator on unlabeled hardware remains an open problem because naive self-training would reinforce its own bias.
+
+\paragraph{Reduced contact geometry.}
+The differentiable model retains floor contacts through foot spheres and disables unsupported mesh self-collisions. This approximation makes gradients tractable but cannot represent knee, hand, or environment contacts. Extending the state and reward to interaction-rich motions will require MJX-compatible collision geometry or a structured contact residual.
+
+\paragraph{Model exploitation and policy drift.}
+Low validation error on logged actions does not guarantee accuracy under an updated policy. Short rollouts, state bounds, elite averaging, mixed simulation replay, and the reference-policy KL reduce this risk but cannot remove it. Deployment must remain gated by held-out model validation, independent simulation tests, deterministic hardware execution, and a recovery protocol. Unconstrained long model rollouts or unanchored policy updates should not be treated as evidence of real-world improvement.
+
+\paragraph{Data coverage.}
+Deterministic hardware collection is safer but narrows the action distribution. Reference-phase coverage, reset diversity, and repeated collection after validated updates are consequently important. Rare contacts or recovery states cannot be inferred from a log that never contains them. Targeted safe excitation and uncertainty-guided data acquisition are promising extensions.
+
+% ---------------------------------------------------------------------------
+% EXPERIMENT SECTION PLACEHOLDER (intentionally excluded from the PDF).
+% The final submission should insert this section before Discussion and report:
+% 1) platforms, motions, real-data duration, sensors, and safety protocol;
+% 2) baselines: source PPO, DR continuation, ASAP/action-delta, LIFT-style WM,
+%    state-delta ensemble, and an oracle external-mocap variant;
+% 3) WM metrics: 1/5/20/50-step prediction, calibration, stability, latency;
+% 4) policy metrics: tracking, contact timing, survival, energy, interventions;
+% 5) ablations: residual coordinates, yaw treatment, H, hybrid loss, ensemble,
+%    estimator freeze, replay rehearsal, safety termination, and KL anchor;
+% 6) at least 5 seeds in simulation and repeated physical trials with CIs.
+% Do not add numerical claims to the abstract/conclusion until these are run.
+% ---------------------------------------------------------------------------
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+We introduced \method{}, a motion-conditioned, physics-informed world-model framework for adapting humanoid imitation policies without external motion capture on the physical robot. The central design separates robot dynamics, policy-facing estimates, and the exogenous reference clock. Onboard deployment logs supervise a yaw-equivariant generalized-force ensemble through differentiable full-step physics and an observation-aware multi-step likelihood. The same model then reconstructs the original imitation interface for conservative, safety-truncated PPO updates anchored to the deployed controller. This formulation provides a concrete route from ordinary proprioceptive logs to model-based whole-body policy adaptation while making its sensing assumptions and failure modes explicit.
+
+\balance
+\bibliographystyle{unsrtnat}
+\bibliography{references}
+
+\end{document}

@@ -1,0 +1,34 @@
+{
+  "source_project": "/root/mjw/wbt_est",
+  "source_package": "source/whole_body_tracking/whole_body_tracking/world_model",
+  "source_git_commit": "1ce24e812491d36e60ce253c646002f34e6aa4a7",
+  "snapshot_date": "2026-10-11",
+  "source_files_sha256": {
+    "__init__.py": "a2e38292eba827e67b994a57abcdb0e578a80f52716eec6c23363a19ffff2010",
+    "brax_backend.py": "adc10e0b0515b653d74924c82ecc698263a4ca6d96e7c87df1621542afa8c044",
+    "collector.py": "020fd3b26ce6138f9b0a3b759a83d927234e0f69289cf29866e39a5e8b47b2a4",
+    "config.py": "300247c3400a702e9ca46e5f894ea739d4f8aeb242795c251d8e375ff2e99116",
+    "dynamics.py": "ecd4db0d25b66052886263694a7b09223e77e2de4b3c4461495f83394df03b3a",
+    "initialization.py": "c071ff683cfd16d212f670149e6629a94a3658423c11e1ba22d5ce1923e90a75",
+    "interfaces.py": "f7c63dea8a2af306e6aadc7aca529ab5bbc292fb02b52687b58ede0ae2a06128",
+    "isaac_adapter.py": "79d2b5d8ea54d48ed041677874b59eeab4bc611417ec3c7200286cfa1fde0e78",
+    "isaac_data_env.py": "a2f34aa6d37d1edeec4ac54e0294d79543c0fb2d91edd0e2ff885f9c0817ecbc",
+    "losses.py": "543307c54d345c2537a2ba6149087817097df17b111e30e4cc1e634455d25cbc",
+    "mjx_backend.py": "7ab6c3fbd94d0fe6afabdf88d0bb0b719f682c96a6253414fa34579447286831",
+    "models.py": "e91b8979480659be871a1726a6f6c2180e7150662dea7e652348e6ac91595801",
+    "motion_reference.py": "2613433495cf982e13c947663dddc0541d1d281867e017e108381b890bab0a66",
+    "pipeline.py": "f7479473e72cb6d253bc4713a58e38d24103b4bfa7916c6974fc07a07096718a",
+    "ppo_finetune.py": "5bb0bc48aa2e3ae6e3e0dce3391f1b27158153fdb6a44a36de56d1a4225a4f92",
+    "replay.py": "6b6a022399f8ca0a463247dbb04084b84b52e263ddff5bce3832531e6e88bcb4",
+    "sac.py": "c72598e4bf7c46a0ebcdbfe86870deb7d25eda9a259f0641afa0d10ee016e20e",
+    "state.py": "2f726de62faa46c5011c069c87e7494793d8b524cc0ce582d905b4ead41cfd6a",
+    "trainer.py": "26da56c6f72a520f83de5233a6ead2d3872cd8763dc7c8e9c9547c341602d531"
+  },
+  "amp_adaptations": [
+    "package imports renamed from whole_body_tracking to legged_lab",
+    "robot dimensions generalized and BSRL 12-DoF contract added",
+    "AMP AnimationTerm reference adapter and runtime audit added",
+    "MJX controller supports actuator or explicit qfrc_applied PD",
+    "serial BSRL MJX test contract added; exact R2 plant is fail-closed"
+  ]
+}
