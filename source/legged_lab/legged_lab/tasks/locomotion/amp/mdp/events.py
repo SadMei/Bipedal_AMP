@@ -5,11 +5,37 @@ from typing import TYPE_CHECKING, Literal
 import torch
 import isaaclab.utils.math as math_utils
 from isaaclab.assets import Articulation
+from isaaclab.envs.mdp import reset_scene_to_default
 from isaaclab.envs.mdp.events import _randomize_prop_by_op
 from isaaclab.managers import SceneEntityCfg
 
+from legged_lab.tasks.locomotion.deepmimic.mdp.events import reset_from_ref
+
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedEnv
+
+
+def reset_from_ref_with_default_mixture(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+    animation: str,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    height_offset: float = 0.0,
+    default_start_probability: float = 0.2,
+):
+    """Mix deployment-like default starts into the usual AMP reference resets."""
+    if not 0.0 <= default_start_probability <= 1.0:
+        raise ValueError("default_start_probability must be in [0, 1]")
+    if env_ids is None:
+        env_ids = torch.arange(env.scene.num_envs, device=env.device)
+    use_default = torch.rand(len(env_ids), device=env.device) < default_start_probability
+    reference_ids, default_ids = env_ids[~use_default], env_ids[use_default]
+    if len(reference_ids):
+        reset_from_ref(env, reference_ids, animation, asset_cfg, height_offset)
+    if len(default_ids):
+        reset_scene_to_default(env, default_ids, reset_joint_targets=True)
+    env._amp_default_start_last_count = int(len(default_ids))
+    env._amp_default_start_last_total = int(len(env_ids))
 
 
 def randomize_joint_default_pos(

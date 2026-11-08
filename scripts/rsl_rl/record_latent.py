@@ -41,6 +41,10 @@ def main():
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--seconds", type=float, default=30.0)
     parser.add_argument("--command", type=float, nargs=3, default=(0.6, 0.0, 0.0))
+    parser.add_argument(
+        "--forward-schedule", type=float, nargs="+",
+        help="Alternating forward-speed/duration pairs, e.g. 0 2 0.4 12 0.8 12",
+    )
     parser.add_argument("--label", default="", help="Short run label shown in the video")
     parser.add_argument(
         "--pd-profile",
@@ -50,6 +54,14 @@ def main():
     )
     AppLauncher.add_app_launcher_args(parser)
     args = parser.parse_args()
+    if args.forward_schedule is not None:
+        if (len(args.forward_schedule) < 2 or len(args.forward_schedule) % 2
+                or any(speed < 0.0 or duration <= 0.0
+                       for speed, duration in zip(args.forward_schedule[::2], args.forward_schedule[1::2]))):
+            parser.error("Forward schedule requires non-negative speed / positive duration pairs")
+        args.forward_schedule = list(zip(args.forward_schedule[::2], args.forward_schedule[1::2]))
+        args.seconds = sum(duration for _, duration in args.forward_schedule)
+        args.command = [args.forward_schedule[0][0], 0.0, 0.0]
     if args.seconds <= 0 or not args.checkpoint.is_file() or args.output_dir.exists():
         parser.error("Require valid checkpoint, positive seconds, and a NEW output directory")
     args.enable_cameras = True
@@ -145,6 +157,15 @@ def record(args, version, app):
     cfg.viewer.eye = (-2.0, 3.0, 1.6)
     cfg.viewer.lookat = (0.25, 0.0, 0.6)
     cfg.observations.policy.enable_corruption = False
+    # A deployment/nominal video must not inject training-only stateful sensor
+    # perturbations.  In particular, robustness R3 serializes episode bias and
+    # frame-delay modifiers separately from IsaacLab's ``noise`` field, so
+    # enable_corruption=False alone does not disable them.
+    disabled_policy_modifiers = {}
+    for term_name, term_cfg in vars(cfg.observations.policy).items():
+        if hasattr(term_cfg, "modifiers") and term_cfg.modifiers is not None:
+            disabled_policy_modifiers[term_name] = saved_env["observations"]["policy"][term_name]["modifiers"]
+            term_cfg.modifiers = None
     for event_name in vars(cfg.events):
         setattr(cfg.events, event_name, None)
     cfg.events.reset_to_default = EventTermCfg(
@@ -229,6 +250,16 @@ def record(args, version, app):
                 raise RuntimeError("BSRL recording must retain analytical parallel ankles")
         dt, fps = env.step_dt, round(1.0 / env.step_dt)
         steps = round(args.seconds / dt)
+        schedule = args.forward_schedule or [(args.command[0], args.seconds)]
+
+        def scheduled_speed(time_s):
+            elapsed = 0.0
+            for speed, duration in schedule:
+                elapsed += duration
+                if time_s < elapsed - 1e-9:
+                    return speed
+            return schedule[-1][0]
+
         trajectory = {key: [] for key in ("time", "obs", "action", "command", "root_pos", "root_quat",
                      "root_lin_vel_b", "joint_pos", "joint_vel", "applied_torque", "fall")}
         initial_yaw = float(robot.data.heading_w[0])
@@ -243,9 +274,13 @@ def record(args, version, app):
         env.render()
         for _ in range(20):
             env.sim.render()
-        command_tag = (f"forward{round(args.command[0] * 10):02d}"
-                       if args.command[1:] == [0.0, 0.0] and np.isclose(args.command[0] * 10, round(args.command[0] * 10))
-                       else "custom_command")
+        if args.forward_schedule:
+            schedule_parts = [f"{speed:g}x{duration:g}" for speed, duration in schedule]
+            command_tag = "forward_step_" + "_".join(schedule_parts).replace(".", "p")
+        else:
+            command_tag = (f"forward{round(args.command[0] * 10):02d}"
+                           if args.command[1:] == [0.0, 0.0] and np.isclose(args.command[0] * 10, round(args.command[0] * 10))
+                           else "custom_command")
         for view in ("whole", "feet"):
             writers[view] = imageio.get_writer(str(output / f"{name.lower()}_model{loaded['iter']}_{command_tag}_{view}.mp4"),
                 fps=fps, codec="libx264", quality=8, macro_block_size=1, ffmpeg_log_level="error",
@@ -262,6 +297,13 @@ def record(args, version, app):
                 live_error = max(live_error, float(np.abs(actions - expected).max()))
             if not np.isfinite(actions).all():
                 raise RuntimeError("Nonfinite ONNX action")
+            # Install the command that will be observed at the end of this
+            # policy step. This preserves the manager's normal one-step
+            # command-to-action timing while making transitions exact in the
+            # recorded observation/history stream.
+            next_speed = scheduled_speed((step + 1) * dt)
+            cmd_tensor[0, 0] = next_speed
+            env.command_manager.get_term("base_velocity").vel_command_b.copy_(cmd_tensor)
             with torch.inference_mode():
                 new_obs, _, terminated, truncated, _ = env.step(torch.from_numpy(actions).to(env.device))
             if bool((terminated | truncated).any()):
@@ -284,7 +326,8 @@ def record(args, version, app):
             t = (step + 1) * dt
             if fall and first_fall is None:
                 first_fall = t
-            values = (t, raw[0].copy(), actions[0].copy(), np.array(args.command), pos, quat, vel, q, dq, torque, fall)
+            active_command = env.command_manager.get_command("base_velocity")[0].cpu().numpy().copy()
+            values = (t, raw[0].copy(), actions[0].copy(), active_command, pos, quat, vel, q, dq, torque, fall)
             for key, value in zip(trajectory, values):
                 trajectory[key].append(value)
             # World-fixed camera azimuth: it follows translation, never hides
@@ -299,7 +342,7 @@ def record(args, version, app):
                 draw = ImageDraw.Draw(frame)
                 draw.rectangle((8, 8, 1265, 122), fill=(18, 22, 28))
                 draw.text((18, 13), f"{name} {args.label or 'latent20'} | model {loaded['iter']} | {view} | ONNX -> Isaac", font=font, fill="white")
-                draw.text((18, 40), f"cmd=({args.command[0]:.2f}, {args.command[1]:.2f}, {args.command[2]:.2f}) | no mirror / no yaw compensation | t={t:5.2f}s", font=font, fill="white")
+                draw.text((18, 40), f"cmd=({active_command[0]:.2f}, 0.00, 0.00) forward-only | no mirror / no yaw compensation | t={t:5.2f}s", font=font, fill="white")
                 draw.text((18, 67), f"body vx={vel[0]:+.3f} m/s | yaw drift={np.degrees(unwrapped_yaw-initial_yaw):+.1f} deg | first fall={first_fall}", font=font, fill="white")
                 scale_values = actual_controller["action_scale"]
                 pd_tag = "saved-run" if args.pd_profile == "nominal" else args.pd_profile
@@ -318,10 +361,12 @@ def record(args, version, app):
                   configuration_differences(saved_env, resolved_scene_config(cfg.to_dict())))
         manifest = {"robot": name, "checkpoint": str(checkpoint), "checkpoint_sha256": checkpoint_hash,
             "iteration": int(loaded["iter"]), "seconds": steps*dt, "frames_per_view": steps, "fps": fps,
-            "command": list(args.command), "pd_profile": args.pd_profile, "label": args.label,
+            "command": list(args.command), "forward_schedule": [list(item) for item in schedule],
+            "pd_profile": args.pd_profile, "label": args.label,
             "actual_controller": actual_controller,
             "physics_dt": cfg.sim.dt, "policy_dt": dt,
             "source_restoration": restore_audit, "nominal_eval": True, "automatic_resets": 0,
+            "disabled_training_policy_modifiers": disabled_policy_modifiers,
             "actor_heading": False, "yaw_compensation": False, "mirror": False,
             "topology": "analytical_parallel_ankles_no_explicit_loops" if name == "BSRL" else "T1_training_plant",
             "first_fall_time": first_fall, "final_yaw_drift_degrees": float(np.degrees(unwrapped_yaw-initial_yaw)),

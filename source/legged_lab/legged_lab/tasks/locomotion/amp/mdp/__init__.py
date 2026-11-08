@@ -8,4 +8,5 @@ from .commands import *
 from .events import *
 from .heading_frame import *
 from .observations import *
+from .observation_modifiers import *
 from .rewards import *
