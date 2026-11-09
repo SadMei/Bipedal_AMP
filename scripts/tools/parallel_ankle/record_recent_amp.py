@@ -100,7 +100,7 @@ def main():
             is_final_checkpoint=checkpoint.stem=='model_29999'))
     args.output.mkdir(parents=True);args.video_dir.mkdir(parents=True)
     save_json(args.output/'selection.json',dict(selected_at=datetime.now().isoformat(),records=records,
-        scope='Seven recent BSRL experiments; excludes older archival runs and T1',
+        scope='Seven recent BSRL experiments; excludes older archival runs',
         fixed_command=[.6,0,0],requested_seconds=30,physics_pd_policy_hz=[1000,1000,50],
         warnings=['Actual frozen gains restored; common MuJoCo deployment is not exact Isaac training dynamics.',
                   'Latest checkpoint fixed at selection; unfinished runs have different training iterations.',

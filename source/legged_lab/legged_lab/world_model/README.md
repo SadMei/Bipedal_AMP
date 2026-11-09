@@ -27,7 +27,6 @@ for causal replay and autoregressive rollout.
 
 | contract | joints | dynamic | context | frame | model input | force output |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| T1 | 25 | 68 | 75 | 143 | 86 | 31 |
 | BSRL | 12 | 42 | 36 | 78 | 47 | 18 |
 
 `pack_frame` rejects missing fields, wrong order/width and inconsistent batch
@@ -66,7 +65,6 @@ transmission randomization. Calling `bsrl_r2_mjx_cfg` raises
 `NotImplementedError` until that exact plant is implemented in MJX. This
 guard prevents a serial approximation from being mislabeled as sim2real R2.
 
-T1 factories and checkpoint formats remain source-compatible with wbtest.
 Checkpoint loading continues to reject mismatched backend, integrator,
 horizon, force frame, orientation input and variance parameterization.
 

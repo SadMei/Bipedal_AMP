@@ -67,7 +67,7 @@ class RslRlWbtEstimatorActorCriticCfg(RslRlEstimatorActorCriticCfg):
 
 
 def enable_state_estimator(env_cfg, agent_cfg, profile: str = "wbtest") -> None:
-    """Enable latest wbtest behavior for BSRL/T1; legacy4d is replay-compatible.
+    """Enable latest wbtest behavior for BSRL; legacy4d is replay-compatible.
 
     Preserve all task dynamics, rewards, commands, critic observations and
     mirror choices. Do not import WBT's motion-tracking policy observations.
@@ -84,8 +84,8 @@ def enable_state_estimator(env_cfg, agent_cfg, profile: str = "wbtest") -> None:
     names = [name for name, term in vars(policy).items() if getattr(term, "func", None) is not None]
     expected = ["base_ang_vel", "root_local_rot_tan_norm", "velocity_commands", "joint_pos", "joint_vel", "actions"]
     joints = policy.joint_pos.params["asset_cfg"].joint_names
-    if len(joints) not in (12, 25):
-        raise ValueError("wbtest AMP estimator supports the ordered BSRL12 / T1-25 joint layouts.")
+    if len(joints) != 12:
+        raise ValueError("wbtest AMP estimator requires the ordered BSRL 12-joint layout.")
     dims = [3, 6, 3, len(joints), len(joints), len(joints)]
     if getattr(policy, "heading_error", None) is not None:
         expected.append("heading_error")

@@ -9,7 +9,6 @@ from rsl_rl.modules import ActorCritic
 from rsl_rl.networks import EmpiricalNormalization
 
 
-T1_TERM_DIMS = (3, 6, 3, 25, 25, 25)
 BSRL_TERM_DIMS = (3, 6, 3, 12, 12, 12)
 NEXT_FRAME_KEY = "latent_next_frame"
 VALID_KEY = "latent_transition_valid"
@@ -28,7 +27,7 @@ def mlp(input_dim, hidden_dims, output_dim=None):
 class HistoryLayout(nn.Module):
     """Isaac term-major flattened history -> chronological frame-major history."""
 
-    def __init__(self, history_length=10, term_dims=T1_TERM_DIMS):
+    def __init__(self, history_length=10, term_dims=BSRL_TERM_DIMS):
         super().__init__()
         self.history_length = history_length
         self.frame_dim = sum(term_dims)
@@ -55,7 +54,7 @@ class LatentActor(nn.Module):
 
     def __init__(self, num_actions, history_length=10, recent_frames=2, latent_dim=20,
                  encoder_dims=(512, 256, 128), actor_dims=(2048, 1024, 512, 128),
-                 term_dims=T1_TERM_DIMS):
+                 term_dims=BSRL_TERM_DIMS):
         super().__init__()
         self.layout = HistoryLayout(history_length, term_dims)
         self.input_dim = history_length * self.layout.frame_dim
@@ -96,9 +95,9 @@ class LatentActorCritic(ActorCritic):
     rollout boundaries so PPO recomputes likelihoods under identical statistics.
     """
 
-    term_dims = T1_TERM_DIMS
-    action_count = 25
-    robot_name = "T1"
+    term_dims = BSRL_TERM_DIMS
+    action_count = 12
+    robot_name = "BSRL"
 
     def __init__(self, obs, obs_groups, num_actions, history_length=10, recent_frames=2,
                  latent_dim=20, encoder_dims=(512, 256, 128), decoder_dims=(128, 256),
@@ -161,8 +160,4 @@ class LatentActorCritic(ActorCritic):
 
 
 class BSRLLatentActorCritic(LatentActorCritic):
-    """The identical predictive objective, for BSRL's 12-joint observation contract."""
-
-    term_dims = BSRL_TERM_DIMS
-    action_count = 12
-    robot_name = "BSRL"
+    """Predictive latent policy for BSRL's 12-joint observation contract."""

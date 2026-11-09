@@ -12,7 +12,7 @@ ROOT=Path(__file__).resolve().parents[3]
 sys.path.insert(0,str(ROOT/'scripts/rsl_rl'))
 sys.path.insert(0,str(ROOT/'scripts/tools/retarget'))
 from bsrl_accad_ablation import expected_configuration, validate_baseline, check_configuration, load_dataset, runtime_check
-from t1_heading_ablation import load_saved_config, configuration_differences
+from frozen_run_config import load_saved_config, configuration_differences
 from export_accad_amp import training_payload
 from bsrl_conventions import BSRL_AMP_JOINT_NAMES, BSRL_AMP_KEY_BODY_NAMES
 

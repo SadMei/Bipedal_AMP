@@ -94,9 +94,8 @@ class EnsemblePrediction:
 class ResidualWorldModel(nn.Module):
     """Ensemble residual-force MLP with a next-state uncertainty head.
 
-    Dimensions are derived exclusively from ``cfg.state``. For example, T1
-    uses an 86-D input and 31-D generalized force while BSRL uses 47-D and
-    18-D respectively. The variance is trained by NLL and retained for
+    Dimensions are derived exclusively from ``cfg.state``. BSRL uses a 47-D
+    input and 18-D generalized force. The variance is trained by NLL and retained for
     diagnostics, but rollout transitions use the elite force mean.
     """
 

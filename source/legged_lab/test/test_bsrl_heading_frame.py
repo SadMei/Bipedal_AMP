@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT / "scripts/rsl_rl"))
 from bsrl_heading_ablation import (
     check_heading_configuration, expected_heading_configuration, validate_reduced_heading_baseline,
 )
-from t1_heading_ablation import load_saved_config
+from frozen_run_config import load_saved_config
 
 PRODUCTION = ROOT / "source/legged_lab/legged_lab/tasks/locomotion/amp/mdp/heading_frame.py"
 ISAAC_UNIFORM = Path("/root/IsaacLab/source/isaaclab/isaaclab/envs/mdp/commands/velocity_command.py")

@@ -26,7 +26,7 @@ else:
 sys.path.insert(0, str(REPO_ROOT / "external/rsl_rl"))
 sys.path.insert(0, str(REPO_ROOT / "scripts/rsl_rl"))
 from rsl_rl.modules import ActorCritic
-from t1_heading_ablation import load_saved_config
+from frozen_run_config import load_saved_config
 
 
 def sha(path):

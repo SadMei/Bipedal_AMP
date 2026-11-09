@@ -16,9 +16,9 @@ import torch
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "external/rsl_rl"))
-    from models import LatentActor, T1_TERM_DIMS, BSRL_TERM_DIMS
+    from models import LatentActor, BSRL_TERM_DIMS
 else:
-    from .models import LatentActor, T1_TERM_DIMS, BSRL_TERM_DIMS
+    from .models import LatentActor, BSRL_TERM_DIMS
 
 
 def export_checkpoint(checkpoint: Path, output_dir: Path):
@@ -27,14 +27,13 @@ def export_checkpoint(checkpoint: Path, output_dir: Path):
 
     repo = Path(__file__).resolve().parents[4]
     sys.path.insert(0, str(repo / "scripts/rsl_rl"))
-    from t1_heading_ablation import load_saved_config
+    from frozen_run_config import load_saved_config
 
     checkpoint = checkpoint.resolve(strict=True)
     config = load_saved_config(checkpoint.parent / "params/agent.yaml")["policy"]
-    contracts = {"legged_lab.latent.models:LatentActorCritic": (25, T1_TERM_DIMS),
-                 "legged_lab.latent.models:BSRLLatentActorCritic": (12, BSRL_TERM_DIMS)}
+    contracts = {"legged_lab.latent.models:BSRLLatentActorCritic": (12, BSRL_TERM_DIMS)}
     if config["class_name"] not in contracts:
-        raise ValueError("Not a supported T1/BSRL latent checkpoint")
+        raise ValueError("Not a supported BSRL latent checkpoint")
     num_actions, term_dims = contracts[config["class_name"]]
     for name in ("policy.onnx", "policy.pt", "contract.json"):
         if (output_dir / name).exists():

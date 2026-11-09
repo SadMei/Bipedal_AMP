@@ -26,7 +26,7 @@ class ManagerBasedAmpEnv(ManagerBasedAnimationEnv):
 
     def __init__(self, cfg: ManagerBasedAmpEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg=cfg, render_mode=render_mode, **kwargs)
-        # Only explicitly clocked assets opt in. Serial BSRL/T1 keep their
+        # Only explicitly clocked assets opt in. Serial robots keep their
         # original actuator path, including all legacy reset semantics.
         self._before_physics_callbacks = tuple(
             asset.begin_physics_step for asset in self.scene.articulations.values()

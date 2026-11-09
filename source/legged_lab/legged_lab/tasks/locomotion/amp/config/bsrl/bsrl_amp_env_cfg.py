@@ -631,7 +631,7 @@ class BSRLAmpEnvCfg(LocomotionAmpEnvCfg):
         self.rewards.action_rate_l2.weight = -0.1
         self.rewards.action_smoothness = RewTerm(func=amp_mdp.ActionSecondOrderL2, weight=-1.0e-3)
         # 此奖励惩罚实际关节角越过软限位，不是策略目标角越过硬限位。
-        # 历史权重 -0.5；2026-09-14 按用户要求对齐 T1/mimic 的 -5.0。
+        # 按 mimic 实验设定为 -5.0。
         self.rewards.dof_pos_limits.weight = -5.0
         # Auxiliary motor/ball coordinates are NOT policy joints: preserve the
         # 12-D joint acceleration/position-limit reward contracts. Torque cost

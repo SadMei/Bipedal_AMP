@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -12,24 +12,6 @@ from .config import WorldModelStateSpec
 CollisionMode = Literal["model", "feet_spheres_only", "feet_mesh_only"]
 IntegratorMode = Literal["xml", "euler", "implicitfast"]
 ControlMode = Literal["actuator", "qfrc_applied"]
-
-
-# Isaac/NPZ exposes joints in articulation traversal order, while the MuJoCo
-# XML groups them by limb.  World-model frames and policy actions always use
-# this Isaac order; controller gains and generalized coordinates use the MJCF
-# order declared by ``MJXBackendCfg.joint_names``.
-ISAAC_25_JOINT_NAMES = (
-    "left_hip_pitch_joint", "right_hip_pitch_joint", "waist_yaw_joint",
-    "left_hip_roll_joint", "right_hip_roll_joint", "waist_pitch_joint",
-    "left_hip_yaw_joint", "right_hip_yaw_joint", "torso_pitch_joint",
-    "left_knee_joint", "right_knee_joint", "torso_roll_joint",
-    "left_ankle_roll_joint", "right_ankle_roll_joint", "torso_yaw_joint",
-    "left_ankle_pitch_joint", "right_ankle_pitch_joint",
-    "left_shoulder_pitch_joint", "right_shoulder_pitch_joint",
-    "left_shoulder_roll_joint", "right_shoulder_roll_joint",
-    "left_shoulder_yaw_joint", "right_shoulder_yaw_joint",
-    "left_elbow_joint", "right_elbow_joint",
-)
 
 
 @dataclass(frozen=True)
@@ -49,8 +31,8 @@ class MJXBackendCfg:
     integrator: IntegratorMode = "euler"
     control_substeps: int = 20
     collision_mode: CollisionMode = "feet_spheres_only"
-    left_foot_body: str = "left_ankle_pitch_Link"
-    right_foot_body: str = "right_ankle_pitch_Link"
+    left_foot_body: str = "link_left_ankle_roll"
+    right_foot_body: str = "link_right_ankle_roll"
     contact_smoothing: float = 0.002
 
     def validate(self, spec: WorldModelStateSpec) -> None:
@@ -84,137 +66,6 @@ class MJXBackendCfg:
             raise ValueError("contact_smoothing must be positive.")
         if self.collision_mode not in ("model", "feet_spheres_only", "feet_mesh_only"):
             raise ValueError(f"Unsupported collision_mode {self.collision_mode!r}.")
-
-
-def wbtest_mjx_cfg(xml_path: str | Path) -> MJXBackendCfg:
-    """Current 25-DoF wbtest controller in MuJoCo actuator order.
-
-    The values intentionally live here rather than importing IsaacLab robot
-    config objects: this keeps MJX usable in a standalone JAX process and
-    makes the exact controller embedded in a WM checkpoint explicit.
-    """
-
-    joint_names = (
-        "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint",
-        "left_knee_joint", "left_ankle_roll_joint", "left_ankle_pitch_joint",
-        "right_hip_pitch_joint", "right_hip_roll_joint", "right_hip_yaw_joint",
-        "right_knee_joint", "right_ankle_roll_joint", "right_ankle_pitch_joint",
-        "waist_yaw_joint", "waist_pitch_joint", "torso_pitch_joint",
-        "torso_roll_joint", "torso_yaw_joint", "left_shoulder_pitch_joint",
-        "left_shoulder_roll_joint", "left_shoulder_yaw_joint", "left_elbow_joint",
-        "right_shoulder_pitch_joint", "right_shoulder_roll_joint",
-        "right_shoulder_yaw_joint", "right_elbow_joint",
-    )
-    default_joint_pos = (
-        -0.09, 0.03, 0.03, 0.22, 0.0, -0.13,
-        -0.09, -0.03, -0.03, 0.22, 0.0, -0.13,
-        0.0, 0.05, 0.0, 0.0, 0.0,
-        0.0, 0.18, 0.0, 1.4, 0.0, -0.18, 0.0, 1.4,
-    )
-    stiffness = (
-        100, 100, 100, 600, 100, 100,
-        100, 100, 100, 600, 100, 100,
-        150, 150, 300, 300, 100,
-        40, 40, 40, 40, 40, 40, 40, 40,
-    )
-    damping = (
-        3, 3, 3, 10, 3, 3,
-        3, 3, 3, 10, 3, 3,
-        5, 5, 5, 5, 3,
-        2, 2, 2, 2, 2, 2, 2, 2,
-    )
-    effort_limit = (
-        110, 110, 110, 1000, 36, 100,
-        110, 110, 110, 1000, 36, 100,
-        110, 110, 100, 100, 60,
-        36, 36, 21, 21, 36, 36, 21, 21,
-    )
-    return MJXBackendCfg(
-        xml_path=str(xml_path),
-        frame_joint_names=ISAAC_25_JOINT_NAMES,
-        joint_names=joint_names,
-        default_joint_pos=default_joint_pos,
-        stiffness=stiffness,
-        damping=damping,
-        effort_limit=effort_limit,
-        action_scale=(0.25,) * 25,
-        collision_mode="model",
-    )
-
-
-def t1_09_mjx_cfg(xml_path: str | Path) -> MJXBackendCfg:
-    """Legacy T1 ninth-run/model30000 controller.
-
-    Kept for reproducing the historical ``t1_09`` checkpoints.  New WM
-    training should use :func:`t1_run39_mjx_cfg` so that the controller and
-    plant match the current T1 run-39 baseline.
-    """
-
-    base = wbtest_mjx_cfg(xml_path)
-    default = list(base.default_joint_pos)
-    default[13] = 0.0  # waist_pitch_joint
-    stiffness = list(base.stiffness)
-    stiffness[14:16] = [150.0, 150.0]  # torso pitch / roll
-    effort = list(base.effort_limit)
-    effort[5] = effort[11] = 180.0  # ankle pitch
-    effort[14] = effort[15] = 180.0  # torso pitch / roll
-    return replace(
-        base,
-        default_joint_pos=tuple(default),
-        stiffness=tuple(stiffness),
-        effort_limit=tuple(effort),
-        integrator="implicitfast",
-        collision_mode="feet_spheres_only",
-    )
-
-
-def t1_run39_mjx_cfg(xml_path: str | Path) -> MJXBackendCfg:
-    """T1 run-39/run-33-baseline controller contract.
-
-    The run-39 Isaac configuration uses the 0809 new-shoe plant, 4x
-    decimation at a 5 ms physics step, delayed implicit actuators, and the
-    gains/limits below.  Unlike the historical ninth-run WM, knees retain
-    their 280 Nm limit. WM contact uses the native shoe meshes against the
-    floor only: no foot-point spheres, self-collisions, or non-foot contacts.
-    The source XML and all inertial/controller parameters are preserved.
-    """
-
-    base = wbtest_mjx_cfg(xml_path)
-    return replace(
-        base,
-        default_joint_pos=(
-            -0.09, 0.03, 0.03, 0.22, 0.0, -0.13,
-            -0.09, -0.03, -0.03, 0.22, 0.0, -0.13,
-            0.0, 0.0, 0.0, 0.0, 0.0,
-            0.0, 0.18, 0.0, 1.4, 0.0, -0.18, 0.0, 1.4,
-        ),
-        stiffness=(
-            100.0, 100.0, 100.0, 600.0, 100.0, 100.0,
-            100.0, 100.0, 100.0, 600.0, 100.0, 100.0,
-            150.0, 150.0, 150.0, 150.0, 100.0,
-            40.0, 40.0, 40.0, 40.0, 40.0, 40.0, 40.0, 40.0,
-        ),
-        damping=(
-            3.0, 3.0, 3.0, 10.0, 3.0, 3.0,
-            3.0, 3.0, 3.0, 10.0, 3.0, 3.0,
-            5.0, 5.0, 5.0, 5.0, 3.0,
-            2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0,
-        ),
-        effort_limit=(
-            110.0, 110.0, 110.0, 280.0, 36.0, 180.0,
-            110.0, 110.0, 110.0, 280.0, 36.0, 180.0,
-            110.0, 110.0, 180.0, 180.0, 60.0,
-            36.0, 36.0, 21.0, 21.0, 36.0, 36.0, 21.0, 21.0,
-        ),
-        integrator="implicitfast",
-        collision_mode="feet_mesh_only",
-    )
-
-
-def t1_wbtest_mjx_cfg(xml_path: str | Path) -> MJXBackendCfg:
-    """Current WM baseline alias; resolves to the T1 run-39 contract."""
-
-    return t1_run39_mjx_cfg(xml_path)
 
 
 BSRL_12_FRAME_JOINT_NAMES = (
@@ -908,9 +759,7 @@ class MJXNominalPhysics:
     def _find_foot_contact_geoms(self) -> tuple:
         """Return active contact geoms used to derive smooth foot contact.
 
-        The legacy filtered mode intentionally selects only foot spheres.  The
-        active T1-39 0809 new-shoe model uses native collision shoe meshes
-        through ``collision_mode="feet_mesh_only"`` (visual meshes stay off).
+        Filtered mode intentionally selects only active foot contact geometry.
         """
         result = []
         for body_id in (self._left_foot_body_id, self._right_foot_body_id):

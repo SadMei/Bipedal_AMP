@@ -156,7 +156,7 @@ def verify(record, report_dir, video_dir, selection, common_xml_sha):
 def index_text(records, result, selection, report_dir):
     lines = [
         '# BSRL AMP 录制对比 — 2026-09-17', '',
-        '本文件夹只收纳本次 7 组最近 BSRL 实验，不包含 T1 或更早的历史归档。原有视频未移动或覆盖。', '',
+        '本文件夹只收纳本次 7 组最近 BSRL 实验，不包含更早的历史归档。原有视频未移动或覆盖。', '',
         '每个视频左侧是全身（视角方位固定、相机随机器人平移），右侧是足踝放大视图；画面显示模型轮数、累计航向偏差和位置。', '',
         '| 实验 / 视频 | checkpoint | 取样时是否最终轮 | 时长 | 仿真结果 | 最后航向偏差 |',
         '| --- | ---: | --- | ---: | --- | ---: |',

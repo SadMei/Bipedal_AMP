@@ -3,7 +3,7 @@
 from copy import deepcopy
 from pathlib import Path
 
-from t1_heading_ablation import load_saved_config
+from frozen_run_config import load_saved_config
 
 PROFILE_CLASSES = {
     "legged_lab.state_est.models:EstimatorActorCritic": "legacy4d",

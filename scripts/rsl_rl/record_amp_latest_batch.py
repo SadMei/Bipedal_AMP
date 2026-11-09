@@ -1,4 +1,4 @@
-"""Freeze five active latent AMP checkpoints and record them on two idle GPUs.
+"""Freeze active BSRL latent AMP checkpoints and record them on two idle GPUs.
 
 No training/checkpoint changes; each rollout uses its own saved plant/controller.
 """
@@ -23,10 +23,6 @@ RUNS = (
      "2026-09-19_02-30-50_accad34_latent_matched_bigpd_anklefixed_nomirror_noest_40000it_8192_formal_20260919"),
     ("bsrl_clean_bigpd", "BSRL cleanAMP bigPD", "bsrl_amp",
      "2026-09-19_02-30-51_accad34_latent_clean_bigpd_anklefixed_nomirror_noest_40000it_8192_formal_20260919"),
-    ("t1_resumed", "T1 resumed from24999", "men_t1_amp",
-     "2026-09-19_00-15-40_latent20_resume24999_to40000_sameconfig_nomirror_noactorheading_8192"),
-    ("t1_clean", "T1 cleanAMP", "men_t1_amp",
-     "2026-09-18_17-51-20_latent20_cleanamp_uniform08_06_15_noheading_nocond_nomirror_40k_8192"),
 )
 
 
@@ -54,7 +50,7 @@ def main():
     if args.selection_file:
         frozen = json.loads(args.selection_file.read_text())["recordings"]
         if [row["key"] for row in frozen] != [row[0] for row in RUNS]:
-            raise ValueError("Frozen selection must contain the same five runs in order")
+            raise ValueError("Frozen selection must contain the same BSRL runs in order")
     for key, label, task, name in RUNS:
         run = ROOT / "logs/rsl_rl" / task / name
         previous = next((row for row in frozen if row["key"] == key), None) if frozen else None

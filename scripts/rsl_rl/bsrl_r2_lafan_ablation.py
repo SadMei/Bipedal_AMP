@@ -8,7 +8,7 @@ from pathlib import Path
 import shutil
 
 from frozen_run_config import restore_run_config
-from t1_heading_ablation import configuration_differences, load_saved_config, resolved_scene_config
+from frozen_run_config import configuration_differences, load_saved_config, resolved_scene_config
 from bsrl_scale01_ablation import validate_baseline
 
 

@@ -56,18 +56,8 @@ parser.add_argument(
 )
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
-parser.add_argument("--t1_latent_baseline", type=str, default=None,
-                    help="Restore a no-heading T1 baseline and enable the no-mirror predictive latent branch.")
-parser.add_argument("--t1_clean_amp_baseline", type=str, default=None,
-                    help="Frozen T1 latent comparison: uniform commands, no heading terms or command-conditioned AMP.")
 parser.add_argument("--bsrl_latent_baseline", type=str, default=None,
                     help="Restore an ACCAD34/no-mirror/reduced-ankle BSRL run and enable predictive latents.")
-parser.add_argument(
-    "--t1_no_actor_heading_baseline",
-    type=str,
-    default=None,
-    help="Run the no-actor-heading T1 ablation, strictly checked against this saved baseline run.",
-)
 parser.add_argument(
     "--bsrl_serial_no_mirror_baseline", type=str, default=None,
     help="Restore this saved direct-PD serial BSRL run and disable only its mirror loss.",
@@ -89,12 +79,6 @@ parser.add_argument(
 parser.add_argument("--estimator_profile", choices=("auto", "wbtest", "legacy4d"), default="auto",
                     help="auto: wbtest for fresh training, saved profile for resumed estimator checkpoints.")
 parser.add_argument(
-    "--t1_amp_finetune",
-    action="store_true",
-    default=False,
-    help="Keep resumed T1 AMP training at the final command range instead of restarting its curriculum.",
-)
-parser.add_argument(
     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
 )
 parser.add_argument("--export_io_descriptors", action="store_true", default=False, help="Export IO descriptors.")
@@ -108,53 +92,30 @@ AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
 if args_cli.estimator_profile != "auto" and not args_cli.use_estimator:
     parser.error("--estimator_profile requires --use_estimator.")
-if args_cli.t1_clean_amp_baseline and (
-    args_cli.task != "LeggedLab-Isaac-AMP-T1-v0" or args_cli.resume or args_cli.use_estimator
-    or args_cli.distributed or args_cli.t1_amp_finetune or args_cli.t1_latent_baseline
-    or args_cli.bsrl_latent_baseline or args_cli.t1_no_actor_heading_baseline
-    or args_cli.bsrl_serial_no_mirror_baseline or args_cli.bsrl_reduced_heading_baseline
-    or args_cli.bsrl_accad_baseline or args_cli.bsrl_accad_manifest or args_cli.bsrl_accad_mirror
-):
-    parser.error("Clean AMP requires fresh single-GPU T1 latent training without other ablation flags.")
 if args_cli.bsrl_latent_baseline and (
     args_cli.task != "LeggedLab-Isaac-AMP-BSRL-v0" or args_cli.resume or args_cli.use_estimator
-    or args_cli.distributed or args_cli.t1_amp_finetune or args_cli.t1_no_actor_heading_baseline
-    or args_cli.t1_latent_baseline or args_cli.bsrl_serial_no_mirror_baseline or args_cli.bsrl_reduced_heading_baseline
+    or args_cli.distributed or args_cli.bsrl_serial_no_mirror_baseline or args_cli.bsrl_reduced_heading_baseline
     or args_cli.bsrl_accad_baseline or args_cli.bsrl_accad_manifest or args_cli.bsrl_accad_mirror
     or os.environ.get("BSRL_EXPLICIT_CLOSED_ANKLES", "0") != "0"
 ):
     parser.error("BSRL latents require fresh single-GPU analytical-parallel training without other ablations.")
-if args_cli.t1_latent_baseline and (
-    args_cli.task != "LeggedLab-Isaac-AMP-T1-v0" or args_cli.resume or args_cli.use_estimator
-    or args_cli.distributed or args_cli.t1_amp_finetune or args_cli.t1_no_actor_heading_baseline
-    or args_cli.bsrl_serial_no_mirror_baseline or args_cli.bsrl_reduced_heading_baseline
-    or args_cli.bsrl_accad_baseline or args_cli.bsrl_accad_manifest or args_cli.bsrl_accad_mirror
-):
-    parser.error("The latent branch requires fresh single-GPU T1 training, without other ablations.")
 if any((args_cli.bsrl_accad_baseline,args_cli.bsrl_accad_manifest,args_cli.bsrl_accad_mirror)) and (
     not all((args_cli.bsrl_accad_baseline,args_cli.bsrl_accad_manifest,args_cli.bsrl_accad_mirror))
     or args_cli.task != 'LeggedLab-Isaac-AMP-BSRL-v0' or args_cli.bsrl_reduced_heading_baseline
-    or args_cli.bsrl_serial_no_mirror_baseline or args_cli.t1_no_actor_heading_baseline
-    or args_cli.resume or args_cli.use_estimator or args_cli.t1_amp_finetune or args_cli.distributed
+    or args_cli.bsrl_serial_no_mirror_baseline
+    or args_cli.resume or args_cli.use_estimator or args_cli.distributed
 ):
     parser.error('ACCAD comparison needs all three ACCAD arguments and fresh estimator-free single-GPU BSRL.')
 if args_cli.bsrl_reduced_heading_baseline and (
     args_cli.task != "LeggedLab-Isaac-AMP-BSRL-v0" or args_cli.bsrl_serial_no_mirror_baseline
-    or args_cli.t1_no_actor_heading_baseline or args_cli.resume or args_cli.use_estimator
-    or args_cli.t1_amp_finetune or args_cli.distributed
+    or args_cli.resume or args_cli.use_estimator or args_cli.distributed
 ):
     parser.error("The reduced heading experiment requires fresh, single-GPU, estimator-free BSRL training.")
 if args_cli.bsrl_serial_no_mirror_baseline and (
-    args_cli.task != "LeggedLab-Isaac-AMP-BSRL-v0" or args_cli.t1_no_actor_heading_baseline
-    or args_cli.resume or args_cli.use_estimator or args_cli.t1_amp_finetune or args_cli.distributed
+    args_cli.task != "LeggedLab-Isaac-AMP-BSRL-v0"
+    or args_cli.resume or args_cli.use_estimator or args_cli.distributed
 ):
     parser.error("The serial no-mirror ablation requires fresh, single-GPU, estimator-free BSRL training.")
-if args_cli.t1_no_actor_heading_baseline and (
-    args_cli.task != "LeggedLab-Isaac-AMP-T1-v0"
-    or args_cli.resume or args_cli.use_estimator or args_cli.t1_amp_finetune or args_cli.distributed
-):
-    parser.error("The no-actor-heading ablation requires fresh, single-GPU, estimator-free T1 training.")
-
 # always enable cameras to record video
 if args_cli.video:
     args_cli.enable_cameras = True
@@ -251,18 +212,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             estimator_profile = "wbtest" if args_cli.estimator_profile == "auto" else args_cli.estimator_profile
             enable_state_estimator(env_cfg, agent_cfg, estimator_profile)
         print(f"[INFO] State estimator enabled: {estimator_profile}.")
-    if args_cli.t1_amp_finetune:
-        curriculum_term = getattr(env_cfg.curriculum, "velocity_range_and_tracking_std", None)
-        if curriculum_term is None:
-            raise ValueError("--t1_amp_finetune requires the T1 velocity curriculum.")
-        params = curriculum_term.params
-        command_ranges = env_cfg.commands.base_velocity.ranges
-        command_ranges.lin_vel_x = tuple(params["lin_vel_x_ranges"][-1])
-        command_ranges.lin_vel_y = tuple(params["lin_vel_y_ranges"][-1])
-        command_ranges.ang_vel_z = tuple(params["ang_vel_z_ranges"][-1])
-        env_cfg.rewards.track_lin_vel_xy_exp.params["std"] = params["tracking_stds"][-1]
-        env_cfg.curriculum.velocity_range_and_tracking_std = None
-        print("[INFO] T1 AMP fine-tune mode: fixed final command range with curriculum disabled.")
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     agent_cfg.max_iterations = (
         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations
@@ -291,24 +240,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     ablation_audit = None
     ablation_audit_name = "heading_ablation_audit.yaml"
-    if args_cli.t1_clean_amp_baseline:
-        from t1_clean_amp_ablation import apply_clean_amp
-
-        ablation_audit = apply_clean_amp(env_cfg, agent_cfg, args_cli.t1_clean_amp_baseline)
-        ablation_audit_name = "clean_amp_ablation_audit.yaml"
-        print("[CLEAN_AMP] T1 latent retained; uniform +/-0.8,+/-0.6,+/-1.5; no heading/mirror/conditional AMP.")
     if args_cli.bsrl_latent_baseline:
         from bsrl_latent_ablation import apply_bsrl_latent
 
         ablation_audit = apply_bsrl_latent(env_cfg, agent_cfg, args_cli.bsrl_latent_baseline)
         ablation_audit_name = "latent_ablation_audit.yaml"
         print("[LATENT] Frozen BSRL ACCAD34: Actor480 -> latent20 + recent96 -> actions12; no mirror; analytical ankles.")
-    if args_cli.t1_latent_baseline:
-        from t1_latent_ablation import apply_t1_latent
-
-        ablation_audit = apply_t1_latent(env_cfg, agent_cfg, args_cli.t1_latent_baseline)
-        ablation_audit_name = "latent_ablation_audit.yaml"
-        print("[LATENT] Frozen T1 baseline: Actor870 -> latent20 + recent174 -> actions25; no mirror.")
     if args_cli.bsrl_accad_baseline:
         from bsrl_accad_ablation import apply_accad_ablation
         ablation_audit = apply_accad_ablation(env_cfg,agent_cfg,args_cli.bsrl_accad_baseline,
@@ -334,14 +271,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         )
         ablation_audit_name = "serial_no_mirror_audit.yaml"
         print("[ABLATION] Saved direct-PD serial BSRL restored exactly; only mirror loss disabled.")
-    if args_cli.t1_no_actor_heading_baseline:
-        from t1_heading_ablation import apply_no_actor_heading_ablation
-
-        ablation_audit = apply_no_actor_heading_ablation(
-            env_cfg, agent_cfg, args_cli.t1_no_actor_heading_baseline
-        )
-        print("[ABLATION] Saved-baseline comparison passed: only Policy heading is removed (445 -> 435).")
-        print("[ABLATION] Critic heading, mirror=0.1, estimator-free PPO/AMP and all other settings preserved.")
 
     # specify directory for logging experiments
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
@@ -432,7 +361,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         print('[ACCAD] Post-initialization full configuration / model / observations audit passed.')
     if args_cli.bsrl_reduced_heading_baseline:
         from bsrl_heading_ablation import check_heading_configuration, expected_heading_configuration
-        from t1_heading_ablation import load_saved_config
+        from frozen_run_config import load_saved_config
         from pathlib import Path
 
         baseline = Path(args_cli.bsrl_reduced_heading_baseline)
@@ -466,23 +395,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         audit["source_sha256"] = snapshot_sources(log_dir)
         dump_yaml(os.path.join(log_dir, "params", "latent_runtime_audit.yaml"), audit)
         print(f"[LATENT] Runtime contract verified: {audit}")
-    if args_cli.t1_latent_baseline:
-        from legged_lab.latent.config import runtime_audit
-        from t1_latent_ablation import check_runtime_configuration, snapshot_sources
-
-        audit = runtime_audit(env.unwrapped, agent_cfg)
-        audit["unrequested_configuration_differences"] = check_runtime_configuration(
-            env_cfg, agent_cfg, args_cli.t1_latent_baseline)
-        audit["source_sha256"] = snapshot_sources(log_dir)
-        dump_yaml(os.path.join(log_dir, "params", "latent_runtime_audit.yaml"), audit)
-        print(f"[LATENT] Runtime contract verified: {audit}")
-    if args_cli.t1_clean_amp_baseline:
-        from t1_clean_amp_ablation import runtime_audit, snapshot_sources
-
-        audit = runtime_audit(env.unwrapped, agent_cfg, args_cli.t1_clean_amp_baseline)
-        audit["source_sha256"] = snapshot_sources(log_dir)
-        dump_yaml(os.path.join(log_dir, "params", "clean_amp_runtime_audit.yaml"), audit)
-        print(f"[CLEAN_AMP] Runtime contract verified: {audit}")
     runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
 
     print(f"Training time: {round(time.time() - start_time, 2)} seconds")

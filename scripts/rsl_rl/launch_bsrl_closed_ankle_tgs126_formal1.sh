@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd /root/mjw/Bipedal_AMP
-# A new run under the existing BSRL task; do not stop reduced-ankle or T1 runs.
+# A new run under the existing BSRL task; do not stop reduced-ankle runs.
 export CUDA_VISIBLE_DEVICES=4
 export BSRL_EXPLICIT_CLOSED_ANKLES=1
 export BSRL_ANKLE_TRANSMISSION_DR=0

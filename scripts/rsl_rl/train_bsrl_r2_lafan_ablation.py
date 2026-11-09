@@ -62,7 +62,7 @@ def train(args, root, version):
     from bsrl_r2_lafan_ablation import (
         apply_ablation, prepare_dataset, runtime_audit, snapshot_sources, TASK_STYLE_LERP,
     )
-    from t1_heading_ablation import load_saved_config
+    from frozen_run_config import load_saved_config
 
     torch.set_num_threads(1)
     torch.backends.cuda.matmul.allow_tf32 = True

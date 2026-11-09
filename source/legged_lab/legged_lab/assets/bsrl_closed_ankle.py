@@ -27,7 +27,7 @@ def with_closed_ankles(serial_cfg, control_decimation=1):
     small.damping = {"joint_.*_hip_yaw": 2.}
     if control_decimation > 1:
         # Convert only this new asset's direct actuators. Legacy serial runs
-        # and T1 do not use this class or change their control timing.
+        # Other robots do not use this class or change their control timing.
         for name in ("large_motors", "small_motors"):
             old = cfg.actuators[name]
             fields = {key: value for key, value in vars(old).items() if key != "class_type"}

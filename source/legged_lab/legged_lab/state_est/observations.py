@@ -1,4 +1,4 @@
-"""Simulator-only labels used to supervise the T1 state estimator."""
+"""Simulator-only labels used to supervise the BSRL state estimator."""
 
 from __future__ import annotations
 

@@ -23,7 +23,7 @@ class WorldModelStateSpec:
     previous actions are inputs, not prediction targets.
     """
 
-    num_joints: int = 25
+    num_joints: int = 12
     num_feet: int = 2
     history_length: int = 3
 
@@ -107,8 +107,7 @@ class WorldModelStateSpec:
 class ResidualWorldModelCfg:
     """Configuration for the LIFT-style ensemble residual model.
 
-    All dimensions are derived from :attr:`state`; no 25-DoF/T1 size is
-    implicit in the network contract.
+    All dimensions are derived from :attr:`state`.
     """
 
     state: WorldModelStateSpec = field(default_factory=WorldModelStateSpec)
@@ -133,7 +132,7 @@ class ResidualWorldModelCfg:
     def model_input_dim(self) -> int:
         # Current privileged state: [base angular velocity, joint q/dq,
         # yaw-invariant root tilt, base linear velocity, root height] + action.
-        # This is 61 + 25 = 86 values for T1 and 35 + 12 = 47 for BSRL.
+        # This is 35 + 12 = 47 values for BSRL.
         return (self.state.root_height_slice.stop - 3) + self.state.action_dim
 
     @property

@@ -5,7 +5,6 @@
   "snapshot_date": "2026-10-11",
   "source_files_sha256": {
     "__init__.py": "a2e38292eba827e67b994a57abcdb0e578a80f52716eec6c23363a19ffff2010",
-    "brax_backend.py": "adc10e0b0515b653d74924c82ecc698263a4ca6d96e7c87df1621542afa8c044",
     "collector.py": "020fd3b26ce6138f9b0a3b759a83d927234e0f69289cf29866e39a5e8b47b2a4",
     "config.py": "300247c3400a702e9ca46e5f894ea739d4f8aeb242795c251d8e375ff2e99116",
     "dynamics.py": "ecd4db0d25b66052886263694a7b09223e77e2de4b3c4461495f83394df03b3a",

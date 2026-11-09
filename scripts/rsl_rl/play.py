@@ -44,10 +44,6 @@ parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
 parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
 parser.add_argument(
-    "--restore_saved_t1_config", action="store_true",
-    help="Restore and verify the complete saved T1 environment/agent before applying playback overrides.",
-)
-parser.add_argument(
     "--replay_audit_dir", type=str, default=None,
     help="Save effective replay configs and provenance in a new directory without changing the training run.",
 )
@@ -83,7 +79,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--command_profile",
-    choices=("config", "mixed", "t1_large", "t1_forward_06", "t1_forward_075", "t1_forward_08", "t1_forward_10"),
+    choices=("config", "mixed", "forward_06", "forward_075", "forward_08", "forward_10"),
     default="config",
     help="Use commands from the environment config or a deterministic mixed-command sequence.",
 )
@@ -122,12 +118,6 @@ parser.add_argument(
 )
 parser.add_argument("--estimator_profile", choices=("auto", "wbtest", "legacy4d"), default="auto",
                     help="Prefer auto: restore estimator version and observations from checkpoint metadata.")
-parser.add_argument(
-    "--heading_observation_mode",
-    choices=("config", "zero_lock", "integrated"),
-    default="config",
-    help="Override the T1 heading-error observation semantics to match the selected checkpoint.",
-)
 parser.add_argument(
     "--debug_interval",
     type=int,
@@ -210,18 +200,10 @@ MIXED_COMMANDS = (
     (0.3, -0.5, 0.0),
     (0.6, 0.0, -0.35),
 )
-T1_LARGE_COMMANDS = (
-    (1.5, 0.0, 0.0),
-    (2.0, 0.0, 0.0),
-    (2.5, 0.0, 0.0),
-    (1.5, 0.55, 0.0),
-    (1.2, 0.0, 1.5),
-    (1.2, 0.0, -1.5),
-)
-T1_FORWARD_06_COMMANDS = ((0.6, 0.0, 0.0),)
-T1_FORWARD_075_COMMANDS = ((0.75, 0.0, 0.0),)
-T1_FORWARD_08_COMMANDS = ((0.8, 0.0, 0.0),)
-T1_FORWARD_10_COMMANDS = ((1.0, 0.0, 0.0),)
+FORWARD_06_COMMANDS = ((0.6, 0.0, 0.0),)
+FORWARD_075_COMMANDS = ((0.75, 0.0, 0.0),)
+FORWARD_08_COMMANDS = ((0.8, 0.0, 0.0),)
+FORWARD_10_COMMANDS = ((1.0, 0.0, 0.0),)
 MIXED_PHASE_STEPS = 150
 
 
@@ -270,10 +252,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # set the log directory for the environment (works for all environment types)
     env_cfg.log_dir = log_dir
 
-    # Replay with the robot asset used by the checkpoint.  T1's default asset
-    # can change between training runs (for example, 0722 -> 0809); loading an
-    # old policy against the current URDF may keep the same tensor dimensions
-    # while silently changing joint frames/limits and producing a twisted pose.
+    # Replay with the robot asset used by the checkpoint. Loading an old policy
+    # against a different URDF can silently change joint frames and limits.
     saved_env_cfg_path = os.path.join(log_dir, "params", "env.yaml")
     if os.path.isfile(saved_env_cfg_path):
         with open(saved_env_cfg_path, encoding="utf-8") as saved_env_cfg_file:
@@ -318,45 +298,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             print(f"[INFO] Restored checkpoint PD gains: {', '.join(restored_gain_groups)}")
 
     replay_audit = None
-    if args_cli.restore_saved_t1_config:
-        if train_task_name != "LeggedLab-Isaac-AMP-T1-v0":
-            raise ValueError("--restore_saved_t1_config is restricted to T1 AMP.")
-        from frozen_run_config import restore_run_config
-
-        replay_audit = restore_run_config(env_cfg, agent_cfg, log_dir)
-        env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else 1
-        env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
-        agent_cfg.device = env_cfg.sim.device
-        env_cfg.seed = args_cli.seed if args_cli.seed is not None else agent_cfg.seed
-        print("[REPLAY] Full saved T1 configuration restored and verified before nominal overrides.")
-
-    if args_cli.heading_observation_mode != "config":
-        from legged_lab.tasks.locomotion.amp import mdp as amp_mdp
-        from isaaclab.managers import ObservationTermCfg as ObsTerm
-
-        heading_term = env_cfg.observations.policy.heading_error
-        critic_heading_term = env_cfg.observations.critic.heading_error
-        if args_cli.heading_observation_mode == "zero_lock":
-            heading_func = amp_mdp.zero_command_heading_error
-            heading_params = {"command_name": "base_velocity", "command_threshold": 0.1}
-        else:
-            heading_func = amp_mdp.integrated_heading_error
-            heading_params = {"command_name": "base_velocity"}
-        if heading_term is None:
-            heading_term = ObsTerm(func=heading_func, params=heading_params.copy())
-            env_cfg.observations.policy.heading_error = heading_term
-        for term in (heading_term, critic_heading_term):
-            term.func = heading_func
-            term.params = heading_params.copy()
-        print(f"[INFO] Heading observation mode: {args_cli.heading_observation_mode}")
 
     command_sequences = {
         "mixed": MIXED_COMMANDS,
-        "t1_large": T1_LARGE_COMMANDS,
-        "t1_forward_06": T1_FORWARD_06_COMMANDS,
-        "t1_forward_075": T1_FORWARD_075_COMMANDS,
-        "t1_forward_08": T1_FORWARD_08_COMMANDS,
-        "t1_forward_10": T1_FORWARD_10_COMMANDS,
+        "forward_06": FORWARD_06_COMMANDS,
+        "forward_075": FORWARD_075_COMMANDS,
+        "forward_08": FORWARD_08_COMMANDS,
+        "forward_10": FORWARD_10_COMMANDS,
     }
     command_sequence = command_sequences.get(args_cli.command_profile, MIXED_COMMANDS)
     if args_cli.nominal_eval:
@@ -412,9 +360,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         command_cfg.heading_command = False
         command_cfg.rel_heading_envs = 0.0
         command_cfg.rel_standing_envs = 0.0
-        # Historical speed-matched T1 commands reference clip-speed caches
-        # that fixed, nominal playback does not need. Do not let training
-        # mixture/single-axis sampling replace or restrict the requested input.
+        # Fixed nominal playback does not need training clip-speed caches.
         from frozen_run_config import disable_training_command_sampling
 
         disable_training_command_sampling(command_cfg)

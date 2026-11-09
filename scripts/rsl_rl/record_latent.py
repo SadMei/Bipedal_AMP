@@ -1,4 +1,4 @@
-"""Frozen T1/BSRL latent checkpoint: nominal ONNX replay in Isaac, two views.
+"""Frozen BSRL latent checkpoint: nominal ONNX replay in Isaac, two views.
 
 Does not touch training/export directories. No heading compensation or automatic
 resets. Writes both videos, the raw trajectory, and exact evaluation provenance.
@@ -84,12 +84,7 @@ def restore_templates(saved_env, saved_agent, version):
     from isaaclab.managers import ObservationTermCfg, RewardTermCfg
 
     policy_class = saved_agent["policy"]["class_name"]
-    if policy_class == "legged_lab.latent.models:LatentActorCritic":
-        from legged_lab.tasks.locomotion.amp.config.t1.t1_amp_env_cfg import T1AmpEnvCfg
-        from legged_lab.tasks.locomotion.amp.config.t1.agents.rsl_rl_ppo_cfg import T1RslRlOnPolicyRunnerAmpCfg
-        cfg, agent = T1AmpEnvCfg(), T1RslRlOnPolicyRunnerAmpCfg()
-        robot_name, width, action_dim = "T1", 870, 25
-    elif policy_class == "legged_lab.latent.models:BSRLLatentActorCritic":
+    if policy_class == "legged_lab.latent.models:BSRLLatentActorCritic":
         from legged_lab.tasks.locomotion.amp.config.bsrl.bsrl_amp_env_cfg import BSRLAmpEnvCfg
         from legged_lab.tasks.locomotion.amp.config.bsrl.agents.rsl_rl_ppo_cfg import BSRLRslRlOnPolicyRunnerAmpCfg
         from legged_lab.assets.bsrl import BSRL_CFG
@@ -110,7 +105,7 @@ def restore_templates(saved_env, saved_agent, version):
         raise ValueError(f"Unsupported checkpoint policy: {policy_class}")
     agent = prepare_agent_cfg_for_local_rsl_rl(agent, version)
     # Current base policy config has no latent fields; supply inert templates.
-    from legged_lab.latent.config import POLICY_OPTIONS
+    from legged_lab.latent.bsrl_config import POLICY_OPTIONS
     for key, value in POLICY_OPTIONS.items():
         setattr(agent.policy, key, value.copy() if isinstance(value, list) else value)
     return cfg, agent, robot_name, width, action_dim
@@ -129,8 +124,13 @@ def record(args, version, app):
     from rsl_rl.utils import string_to_callable
     from legged_lab.envs import ManagerBasedAmpEnv
     from legged_lab.latent.export import export_checkpoint
-    from frozen_run_config import restore_run_config, disable_training_command_sampling
-    from t1_heading_ablation import load_saved_config, configuration_differences, resolved_scene_config
+    from frozen_run_config import (
+        configuration_differences,
+        disable_training_command_sampling,
+        load_saved_config,
+        resolved_scene_config,
+        restore_run_config,
+    )
 
     torch.set_num_threads(1)
     checkpoint = args.checkpoint.resolve(strict=True)
@@ -244,10 +244,9 @@ def record(args, version, app):
         print(f"[CONTROLLER] Verified saved PD/scale: {actual_controller}", flush=True)
         cmd_tensor = torch.tensor(args.command, device=env.device).reshape(1, 3)
         torch.testing.assert_close(env.command_manager.get_command("base_velocity"), cmd_tensor)
-        if name == "BSRL":
-            from legged_lab.assets.bsrl_reduced_ankle import ReducedAnkleArticulation
-            if not isinstance(robot, ReducedAnkleArticulation):
-                raise RuntimeError("BSRL recording must retain analytical parallel ankles")
+        from legged_lab.assets.bsrl_reduced_ankle import ReducedAnkleArticulation
+        if not isinstance(robot, ReducedAnkleArticulation):
+            raise RuntimeError("BSRL recording must retain analytical parallel ankles")
         dt, fps = env.step_dt, round(1.0 / env.step_dt)
         steps = round(args.seconds / dt)
         schedule = args.forward_schedule or [(args.command[0], args.seconds)]
@@ -368,7 +367,7 @@ def record(args, version, app):
             "source_restoration": restore_audit, "nominal_eval": True, "automatic_resets": 0,
             "disabled_training_policy_modifiers": disabled_policy_modifiers,
             "actor_heading": False, "yaw_compensation": False, "mirror": False,
-            "topology": "analytical_parallel_ankles_no_explicit_loops" if name == "BSRL" else "T1_training_plant",
+            "topology": "analytical_parallel_ankles_no_explicit_loops",
             "first_fall_time": first_fall, "final_yaw_drift_degrees": float(np.degrees(unwrapped_yaw-initial_yaw)),
             "displacement_xy": (pos[:2] - initial_xy).tolist(), "mean_body_vx": float(arrays["root_lin_vel_b"][:, 0].mean()),
             "live_onnx_max_abs_error": live_error, "export": contract,

@@ -22,7 +22,7 @@ from bsrl_robustness_ablation import (  # noqa: E402
     BASELINE_RUN, OBSERVATION_PERTURBATIONS, TRANSMISSION_RANGES, VARIANTS,
     expected_configuration,
 )
-from t1_heading_ablation import configuration_differences, load_saved_config  # noqa: E402
+from frozen_run_config import configuration_differences, load_saved_config  # noqa: E402
 from legged_lab.tasks.locomotion.amp.mdp.observation_modifiers import (  # noqa: E402
     EpisodeBiasDelay, EpisodeBiasDelayCfg,
 )

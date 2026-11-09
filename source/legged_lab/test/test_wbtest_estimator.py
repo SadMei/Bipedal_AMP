@@ -1,4 +1,4 @@
-"""CPU contract tests for both AMP robots and the legacy estimator path."""
+"""CPU contract tests for the BSRL AMP estimator and legacy path."""
 
 import ast
 import copy
@@ -26,11 +26,11 @@ GROUPS = {"policy": ["policy"], "critic": ["critic"], "discriminator": ["disc"],
           "discriminator_demonstration": ["disc_demo"]}
 
 
-def dims(joints=25, heading=False):
+def dims(joints=12, heading=False):
     return [3, 6, 3, joints, joints, joints] + ([2] if heading else [])
 
 
-def observations(joints=25, heading=False, label_dim=8, history=3):
+def observations(joints=12, heading=False, label_dim=8, history=3):
     target = torch.randn(8, label_dim)
     if label_dim == 8:
         target[:, 4:6] = torch.randint(0, 2, (8, 2)).float()
@@ -39,14 +39,14 @@ def observations(joints=25, heading=False, label_dim=8, history=3):
                        "disc": torch.randn(8, 4, 7), "disc_demo": torch.randn(8, 4, 7)}, [8])
 
 
-def policy(joints=25, heading=False, **kwargs):
+def policy(joints=12, heading=False, **kwargs):
     obs = observations(joints, heading)
     return models.WbtEstimatorActorCritic(
         obs, GROUPS, joints, estimator_term_dims=dims(joints, heading),
         actor_hidden_dims=[32, 16], critic_hidden_dims=[16], estimator_hidden_dims=[32, 16], **kwargs)
 
 
-@pytest.mark.parametrize("joints,heading", [(12, False), (25, False), (25, True)])
+@pytest.mark.parametrize("joints,heading", [(12, False)])
 def test_term_major_current_frame_and_width(joints, heading):
     widths = dims(joints, heading)
     frames = torch.arange(3 * sum(widths)).reshape(1, 3, sum(widths)).float()
@@ -59,7 +59,7 @@ def test_term_major_current_frame_and_width(joints, heading):
     assert torch.all((augmented[:, -4:-2] >= 0) & (augmented[:, -4:-2] <= 1))
 
 
-@pytest.mark.parametrize("joints", [12, 25])
+@pytest.mark.parametrize("joints", [12])
 def test_history_only_reaches_actor_via_estimator_and_ppo_is_detached(joints):
     p = policy(joints)
     obs = observations(joints)
@@ -85,7 +85,7 @@ def test_privileged_values_cannot_leak_to_actor():
     obs["critic"][:] = float("nan")
     torch.testing.assert_close(p.act_inference(obs), expected, rtol=0, atol=0)
     with pytest.raises(ValueError, match="never privileged"):
-        models.WbtEstimatorActorCritic(obs, {**GROUPS, "policy": ["policy", "critic"]}, 25,
+        models.WbtEstimatorActorCritic(obs, {**GROUPS, "policy": ["policy", "critic"]}, 12,
                                        estimator_term_dims=dims())
 
 
@@ -114,7 +114,7 @@ def test_exact_wbt_run46_loss_and_gradient_parity():
     assert torch.isfinite(torch.autograd.grad(loss, raw)[0]).all()
 
 
-@pytest.mark.parametrize("joints", [12, 25])
+@pytest.mark.parametrize("joints", [12])
 def test_independent_normalizers_and_checkpoint_roundtrip(joints):
     p, obs = policy(joints), observations(joints)
     p.update_normalization(obs)
@@ -126,7 +126,7 @@ def test_independent_normalizers_and_checkpoint_roundtrip(joints):
     torch.testing.assert_close(other.act_inference(obs), p.act_inference(obs), rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("joints", [12, 25])
+@pytest.mark.parametrize("joints", [12])
 def test_project_play_onnx_and_isaac_jit_export(joints, tmp_path):
     ort = pytest.importorskip("onnxruntime")
     path = Path("/root/IsaacLab/source/isaaclab_rl/isaaclab_rl/rsl_rl/exporter.py")
@@ -148,7 +148,7 @@ def test_project_play_onnx_and_isaac_jit_export(joints, tmp_path):
                                p.actor(raw).detach().numpy(), rtol=1e-4, atol=1e-5)
 
 
-@pytest.mark.parametrize("joints", [12, 25])
+@pytest.mark.parametrize("joints", [12])
 def test_legacy_four_state_contract_unchanged(joints):
     obs = observations(joints, label_dim=4, history=5)
     options = dict(actor_hidden_dims=[16], critic_hidden_dims=[16], estimator_hidden_dims=[16])
@@ -162,7 +162,7 @@ def test_legacy_four_state_contract_unchanged(joints):
         policy(joints).load_state_dict(old.state_dict())
 
 
-@pytest.mark.parametrize("robot,widths", [("bsrl", [144, 240]), ("t1", [261, 267, 435, 445])])
+@pytest.mark.parametrize("robot,widths", [("bsrl", [144, 240])])
 def test_mirror_three_and_five_frame_involution(robot, widths):
     path = ROOT / f"source/legged_lab/legged_lab/tasks/locomotion/amp/mdp/symmetry/{robot}.py"
     spec = importlib.util.spec_from_file_location(f"wbtest_symmetry_{robot}", path)
@@ -174,7 +174,7 @@ def test_mirror_three_and_five_frame_involution(robot, widths):
                                    raw, rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("joints", [12, 25])
+@pytest.mark.parametrize("joints", [12])
 def test_actual_ppoamp_update_learns_estimator(joints):
     from rsl_rl.algorithms.ppo_amp import PPOAMP
     from rsl_rl.storage import RolloutStorage, CircularBuffer
@@ -266,7 +266,7 @@ def test_eight_labels_left_right_contact_history_and_origin(isaac_free_config):
     torch.testing.assert_close(labels.state_estimator_label(env, asset), expected[:, :4])
 
 
-@pytest.mark.parametrize("joints,heading", [(12, False), (25, False), (25, True)])
+@pytest.mark.parametrize("joints,heading", [(12, False)])
 def test_config_changes_only_estimator_contract(isaac_free_config, joints, heading):
     Cfg, config, _ = isaac_free_config
     def term(**kwargs):

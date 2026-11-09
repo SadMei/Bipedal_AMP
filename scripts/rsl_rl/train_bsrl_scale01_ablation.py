@@ -68,9 +68,9 @@ def train(args, root, version):
     torch.backends.cudnn.allow_tf32 = True
     torch.backends.cudnn.deterministic = False
     torch.backends.cudnn.benchmark = False
-    old_env = __import__("t1_heading_ablation", fromlist=["load_saved_config"]).load_saved_config(
+    old_env = __import__("frozen_run_config", fromlist=["load_saved_config"]).load_saved_config(
         args.baseline / "params/env.yaml")
-    old_agent = __import__("t1_heading_ablation", fromlist=["load_saved_config"]).load_saved_config(
+    old_agent = __import__("frozen_run_config", fromlist=["load_saved_config"]).load_saved_config(
         args.baseline / "params/agent.yaml")
     cfg, agent, robot_name, _, _ = restore_templates(old_env, old_agent, version)
     if robot_name != "BSRL":

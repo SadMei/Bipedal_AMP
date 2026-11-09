@@ -1,8 +1,7 @@
 """Physics-informed residual world-model API for Legged Lab.
 
-The core is dimensioned by :class:`WorldModelStateSpec`; T1 and BSRL adapters
-share the same replay/model/trainer contracts. Isaac extraction remains
-strictly opt-in.
+The core is dimensioned by :class:`WorldModelStateSpec` and the BSRL adapter
+uses the same replay/model/trainer contracts. Isaac extraction remains opt-in.
 """
 
 from .config import ResidualWorldModelCfg, WorldModelStateSpec
@@ -27,10 +26,6 @@ from .mjx_backend import (
     MJXNominalPhysics,
     bsrl_r2_mjx_cfg,
     bsrl_serial_mjx_cfg,
-    t1_09_mjx_cfg,
-    t1_run39_mjx_cfg,
-    t1_wbtest_mjx_cfg,
-    wbtest_mjx_cfg,
 )
 from .models import (
     VARIANCE_PARAMETERIZATION,
@@ -100,10 +95,6 @@ __all__ = [
     "bsrl_estimator_actor_indices",
     "bsrl_serial_mjx_cfg",
     "bsrl_world_model_state_spec",
-    "wbtest_mjx_cfg",
-    "t1_wbtest_mjx_cfg",
-    "t1_09_mjx_cfg",
-    "t1_run39_mjx_cfg",
     "dynamic_state",
     "model_input",
     "pack_frame",

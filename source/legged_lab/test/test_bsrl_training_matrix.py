@@ -10,7 +10,7 @@ import torch
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "scripts/rsl_rl"))
 from bsrl_training_matrix import expected_configuration, command_motion_patterns, VARIANTS, UNIFORM_COMMAND
-from t1_heading_ablation import load_saved_config, configuration_differences
+from frozen_run_config import load_saved_config, configuration_differences
 
 BASE = ROOT / "logs/rsl_rl/bsrl_amp/2026-09-17_18-18-30_accad34_reduced_latent20_h10_recent2_predict33_kl001_nomirror_8192"
 SPEC = importlib.util.spec_from_file_location("motion_categories", ROOT / "source/legged_lab/legged_lab/managers/motion_command_categories.py")

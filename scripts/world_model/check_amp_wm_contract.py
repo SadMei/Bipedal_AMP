@@ -75,7 +75,7 @@ def audit(args, root: Path, version: str) -> None:
     from bsrl_dynamics_restore import restore_bsrl_dynamics
     from frozen_run_config import restore_run_config
     from record_latent import restore_templates
-    from t1_heading_ablation import load_saved_config
+    from frozen_run_config import load_saved_config
 
     run = args.run_dir.resolve(strict=True)
     saved_env = load_saved_config(run / "params/env.yaml")

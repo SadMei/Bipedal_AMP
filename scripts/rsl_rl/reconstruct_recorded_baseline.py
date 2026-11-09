@@ -8,7 +8,7 @@ import re
 
 import yaml
 
-from t1_heading_ablation import SavedConfigLoader, configuration_differences, resolved_scene_config
+from frozen_run_config import SavedConfigLoader, configuration_differences, resolved_scene_config
 
 
 def tokens(path):

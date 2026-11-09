@@ -13,7 +13,7 @@ def main():
     import imageio_ffmpeg
     import numpy as np
     import onnxruntime as ort
-    from t1_heading_ablation import load_saved_config, configuration_differences
+    from frozen_run_config import load_saved_config, configuration_differences
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path)
     parser.add_argument("--completed-only", action="store_true")

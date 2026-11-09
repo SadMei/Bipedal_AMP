@@ -55,7 +55,7 @@ def train(args, root, version):
     from legged_lab.envs import ManagerBasedAmpEnv
     from rsl_rl.runners import AMPRunner
     from record_latent import restore_templates
-    from t1_heading_ablation import load_saved_config
+    from frozen_run_config import load_saved_config
     from bsrl_training_matrix import apply_matrix, runtime_audit, snapshot_sources
 
     torch.set_num_threads(1)

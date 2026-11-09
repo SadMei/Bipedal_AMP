@@ -60,7 +60,7 @@ def train(args, root, version):
     from rsl_rl.runners import AMPRunner
     from record_latent import restore_templates
     from bsrl_robustness_ablation import apply_ablation, runtime_audit, snapshot_sources
-    from t1_heading_ablation import load_saved_config
+    from frozen_run_config import load_saved_config
 
     torch.set_num_threads(1)
     torch.backends.cuda.matmul.allow_tf32 = True

@@ -1,8 +1,17 @@
-"""BSRL opt-in contract. T1's defaults/checkpoint shapes remain unchanged."""
+"""BSRL predictive-latent policy contract."""
 
-from .config import POLICY_OPTIONS as T1_POLICY_OPTIONS, ALGORITHM_CLASS
-
-POLICY_OPTIONS = {**T1_POLICY_OPTIONS, "class_name": "legged_lab.latent.models:BSRLLatentActorCritic"}
+ALGORITHM_CLASS = "legged_lab.latent.algorithm:LatentPPOAMP"
+POLICY_OPTIONS = {
+    "class_name": "legged_lab.latent.models:BSRLLatentActorCritic",
+    "history_length": 10,
+    "recent_frames": 2,
+    "latent_dim": 20,
+    "encoder_dims": [512, 256, 128],
+    "decoder_dims": [128, 256],
+    "actor_hidden_dims": [2048, 1024, 512, 128],
+    "latent_loss_coef": 1.0,
+    "latent_kl_beta": 0.01,
+}
 POLICY_TERMS = ["base_ang_vel", "root_local_rot_tan_norm", "velocity_commands",
                 "joint_pos", "joint_vel", "actions"]
 

@@ -11,7 +11,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "scripts/rsl_rl"))
 from frozen_run_config import _restore_value, disable_training_command_sampling
-from t1_heading_ablation import configuration_differences, load_saved_config
+from frozen_run_config import configuration_differences, load_saved_config
 
 
 class Config(SimpleNamespace):

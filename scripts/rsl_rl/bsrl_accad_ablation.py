@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 
 from frozen_run_config import restore_run_config
-from t1_heading_ablation import configuration_differences, load_saved_config, resolved_scene_config
+from frozen_run_config import configuration_differences, load_saved_config, resolved_scene_config
 
 ACCAD_GROUNDING = 'bsrl_accad_source_clearance_v1'
 HEADING_MODULE = 'legged_lab.tasks.locomotion.amp.mdp.heading_frame'

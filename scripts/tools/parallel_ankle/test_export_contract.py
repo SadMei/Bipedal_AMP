@@ -8,7 +8,7 @@ import pytest
 from ._paths import REPO_ROOT
 from .export_checkpoint import critic_widths
 from .replay_policy import load_nominal, JOINTS
-from scripts.rsl_rl.t1_heading_ablation import load_saved_config
+from scripts.rsl_rl.frozen_run_config import load_saved_config
 
 
 def frozen(prefix):

@@ -130,12 +130,5 @@ class WorldModelPortTests(unittest.TestCase):
         self.assertEqual(agent.augment_observation(observation).shape, (5, 56))
         self.assertEqual(agent.act(observation, deterministic=True).shape, (5, 12))
 
-    def test_original_t1_dimensions_remain_compatible(self):
-        spec = WorldModelStateSpec()
-        cfg = ResidualWorldModelCfg(state=spec)
-        self.assertEqual((spec.dynamic_dim, spec.context_dim, spec.frame_dim), (68, 75, 143))
-        self.assertEqual((cfg.model_input_dim, cfg.output_dim, cfg.uncertainty_dim), (86, 31, 60))
-
-
 if __name__ == "__main__":
     unittest.main()

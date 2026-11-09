@@ -7,7 +7,7 @@ from pathlib import Path
 import shutil
 
 from frozen_run_config import _restore_value, restore_run_config
-from t1_heading_ablation import configuration_differences, load_saved_config, resolved_scene_config
+from frozen_run_config import configuration_differences, load_saved_config, resolved_scene_config
 
 VARIANTS = ("scale01", "matched_bigpd", "clean_bigpd")
 UNIFORM_COMMAND = "isaaclab.envs.mdp.commands.velocity_command:UniformVelocityCommand"

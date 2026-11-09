@@ -1,20 +1,28 @@
-"""BSRL latent contract, reset-safe PPO/AMP, export and T1 compatibility tests."""
+"""BSRL latent contract, reset-safe PPO/AMP and export tests."""
 
 import copy
 import importlib.util
 from pathlib import Path
 import sys
+import types
 
 import numpy as np
 import pytest
 import torch
 from tensordict import TensorDict
 
-import test_t1_latent as shared
-
-ROOT = shared.ROOT
-models, algorithm = shared.models, shared.algorithm
-NEXT, VALID = shared.NEXT, shared.VALID
+ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT / "external/rsl_rl"))
+sys.path.insert(0, str(ROOT / "scripts/rsl_rl"))
+PKG = "bsrl_latent_test_package"
+package = types.ModuleType(PKG)
+package.__path__ = [str(ROOT / "source/legged_lab/legged_lab/latent")]
+sys.modules[PKG] = package
+models = __import__(PKG + ".models", fromlist=["*"])
+algorithm = __import__(PKG + ".algorithm", fromlist=["*"])
+NEXT, VALID = models.NEXT_FRAME_KEY, models.VALID_KEY
+GROUPS = {"policy": ["policy"], "critic": ["critic"], "discriminator": ["disc"],
+          "discriminator_demonstration": ["disc_demo"]}
 BASELINE = ROOT / "logs/rsl_rl/bsrl_amp/2026-09-16_21-06-48_accad34_reduced_parallel_headingpriv_noestimator_nomirror_8192"
 
 
@@ -24,7 +32,7 @@ def observations(n=8):
 
 
 def policy(obs=None):
-    return models.BSRLLatentActorCritic(observations() if obs is None else obs, shared.GROUPS, 12,
+    return models.BSRLLatentActorCritic(observations() if obs is None else obs, GROUPS, 12,
         encoder_dims=(32, 16), decoder_dims=(16,), actor_hidden_dims=(32, 16),
         critic_hidden_dims=(16,), noise_std_type="scalar")
 
@@ -128,17 +136,17 @@ def test_bsrl_export_has_no_decoder_or_random_latent(tmp_path):
 
 
 def saved_baseline():
-    from t1_heading_ablation import load_saved_config
+    from frozen_run_config import load_saved_config
     if not (BASELINE / "params/env.yaml").is_file():
         pytest.skip("Local frozen BSRL baseline unavailable")
     return load_saved_config(BASELINE / "params/env.yaml"), load_saved_config(BASELINE / "params/agent.yaml")
 
 
 def test_baseline_and_only_documented_config_differences(monkeypatch):
-    config = __import__(shared.PKG + ".bsrl_config", fromlist=["*"])
+    config = __import__(PKG + ".bsrl_config", fromlist=["*"])
     monkeypatch.setitem(sys.modules, "legged_lab.latent.bsrl_config", config)
     from bsrl_latent_ablation import validate_baseline, expected_configuration
-    from t1_heading_ablation import configuration_differences
+    from frozen_run_config import configuration_differences
     env, agent = saved_baseline()
     validate_baseline(env, agent)
     e, a = expected_configuration(env, agent, run_name="latent", num_envs=8192, max_iterations=25000, device="cuda:0")
@@ -170,28 +178,3 @@ def test_wrong_baselines_rejected(corruption):
         e["motion_data"]["motion_dataset"]["motion_data_weights"] = {"clip": 1.0}
     with pytest.raises(ValueError):
         validate_baseline(e, a)
-
-
-def test_existing_t1_checkpoint_and_outputs_are_exactly_compatible():
-    run = ROOT / "logs/rsl_rl/men_t1_amp/2026-09-17_18-03-20_latent20_h10_recent2_predict59_kl001_nomirror_noactorheading_8192"
-    old_source = run / "latent_source/source/legged_lab/legged_lab/latent/models.py"
-    if not old_source.is_file():
-        pytest.skip("Frozen T1 source unavailable")
-    spec = importlib.util.spec_from_file_location("t1_latent_frozen", old_source)
-    old = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(old)
-    obs = shared.observations()
-    from t1_heading_ablation import load_saved_config
-    options = load_saved_config(run / "params/agent.yaml")["policy"]
-    options.pop("class_name")
-    original = old.LatentActorCritic(obs, shared.GROUPS, 25, **options)
-    original.load_state_dict(torch.load(run / "model_0.pt", map_location="cpu", weights_only=False)["model_state_dict"])
-    current = models.LatentActorCritic(obs, shared.GROUPS, 25, **options)
-    current.load_state_dict(original.state_dict())
-    torch.testing.assert_close(current.act_inference(obs), original.act_inference(obs), rtol=0, atol=0)
-    target = shared.labels(obs)
-    torch.manual_seed(52)
-    old_loss = original.compute_auxiliary_loss(target)[0]
-    torch.manual_seed(52)
-    new_loss = current.compute_auxiliary_loss(target)[0]
-    torch.testing.assert_close(new_loss, old_loss, rtol=0, atol=0)

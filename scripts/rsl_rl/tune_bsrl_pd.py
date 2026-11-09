@@ -67,7 +67,7 @@ def run(args, version):
     from legged_lab.envs import ManagerBasedAmpEnv
     from record_latent import restore_templates
     from frozen_run_config import restore_run_config, disable_training_command_sampling
-    from t1_heading_ablation import load_saved_config
+    from frozen_run_config import load_saved_config
 
     torch.set_num_threads(1)
     output = args.output_dir.resolve()

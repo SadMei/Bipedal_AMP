@@ -6,7 +6,7 @@ from pathlib import Path
 import shutil
 
 from frozen_run_config import restore_run_config
-from t1_heading_ablation import configuration_differences, load_saved_config, resolved_scene_config
+from frozen_run_config import configuration_differences, load_saved_config, resolved_scene_config
 
 
 def validate_baseline(env, agent):
@@ -121,17 +121,21 @@ def apply_bsrl_latent(env_cfg, agent_cfg, baseline_run):
 
 
 def snapshot_sources(log_dir):
-    from t1_latent_ablation import snapshot_sources as snapshot_common
-
-    hashes = snapshot_common(log_dir)
+    hashes = {}
     root = Path(__file__).resolve().parents[2]
-    for relative in ("scripts/rsl_rl/bsrl_latent_ablation.py", "scripts/rsl_rl/launch_bsrl_latent.sh",
-                     "source/legged_lab/legged_lab/latent/README_bsrl.md", "source/legged_lab/test/test_bsrl_latent.py",
-                     "scripts/rsl_rl/bsrl_accad_ablation.py", "source/legged_lab/legged_lab/assets/bsrl_reduced_ankle.py",
-                     "source/legged_lab/legged_lab/assets/bsrl_ankle_transmission.py"):
-        source = root / relative
+    sources = list((root / "source/legged_lab/legged_lab/latent").glob("*.py"))
+    sources += [root / relative for relative in (
+        "scripts/rsl_rl/bsrl_latent_ablation.py", "scripts/rsl_rl/launch_bsrl_latent.sh",
+        "source/legged_lab/legged_lab/latent/README.md", "source/legged_lab/test/test_bsrl_latent.py",
+        "scripts/rsl_rl/bsrl_accad_ablation.py", "scripts/rsl_rl/frozen_run_config.py",
+        "scripts/rsl_rl/train.py", "source/legged_lab/legged_lab/assets/bsrl_reduced_ankle.py",
+        "source/legged_lab/legged_lab/assets/bsrl_ankle_transmission.py",
+        "external/rsl_rl/rsl_rl/algorithms/ppo_amp.py", "external/rsl_rl/rsl_rl/runners/amp_runner.py",
+    )]
+    for source in sources:
+        relative = source.relative_to(root)
         target = Path(log_dir) / "latent_source" / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
-        hashes[relative] = hashlib.sha256(source.read_bytes()).hexdigest()
+        hashes[str(relative)] = hashlib.sha256(source.read_bytes()).hexdigest()
     return hashes

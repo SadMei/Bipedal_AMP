@@ -42,9 +42,9 @@ def test_override_changes_only_pd():
     assert all((a.effort_limit, a.min_delay, a.max_delay) == (112, 0, 4) for a in actuators.values())
 
 
-def test_rejects_t1_override():
+def test_rejects_non_bsrl_override():
     with pytest.raises(ValueError, match="restricted to BSRL"):
-        PROFILES.apply_bsrl_pd_profile(None, "T1", "damped2")
+        PROFILES.apply_bsrl_pd_profile(None, "other_robot", "damped2")
 
 
 def test_unknown_joint_is_not_silently_assigned_a_gain():

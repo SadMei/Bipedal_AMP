@@ -47,7 +47,7 @@ def _make_term(num_envs, action_dim):
     return _load_reward_class()(SimpleNamespace(weight=-0.001), env), env
 
 
-@pytest.mark.parametrize("action_dim", [12, 25])
+@pytest.mark.parametrize("action_dim", [12])
 def test_linear_ramp_and_constant_large_target(action_dim):
     term, env = _make_term(3, action_dim)
     unit = torch.arange(1, 4, dtype=torch.float32).unsqueeze(-1).expand(3, action_dim)
@@ -63,7 +63,7 @@ def test_linear_ramp_and_constant_large_target(action_dim):
         assert term._prev_prev_action.data_ptr() != env.action_manager.prev_action.data_ptr()
 
 
-@pytest.mark.parametrize("action_dim", [12, 25])
+@pytest.mark.parametrize("action_dim", [12])
 def test_random_8192_env_sequence_and_partial_episode_resets(action_dim):
     term, env = _make_term(8192, action_dim)
     generator = torch.Generator().manual_seed(42)
@@ -111,23 +111,19 @@ def test_different_reward_instances_do_not_share_history():
     assert torch.count_nonzero(second._prev_prev_action) == 0
 
 
-@pytest.mark.parametrize("robot", ["t1", "bsrl"])
-def test_configuration_weights_and_no_action_clipping(robot):
-    path = AMP / f"config/{robot}/{robot}_amp_env_cfg.py"
+def test_configuration_weights_and_no_action_clipping():
+    path = AMP / "config/bsrl/bsrl_amp_env_cfg.py"
     tree = ast.parse(path.read_text())
     compile(tree, str(path), "exec")
     assignments = {ast.unparse(n.targets[0]): n.value for n in ast.walk(tree) if isinstance(n, ast.Assign)}
     expected = {"action_rate_l2": -0.1, "dof_acc_l2": -1.0e-6, "dof_pos_limits": -5.0}
     for name, weight in expected.items():
-        if robot == "bsrl":
-            value = assignments[f"self.rewards.{name}.weight"]
-        else:
-            value = next(k.value for k in assignments[name].keywords if k.arg == "weight")
+        value = assignments[f"self.rewards.{name}.weight"]
         assert ast.literal_eval(value) == weight
-    smoothness = assignments["self.rewards.action_smoothness" if robot == "bsrl" else "action_smoothness"]
+    smoothness = assignments["self.rewards.action_smoothness"]
     kwargs = {k.arg: k.value for k in smoothness.keywords}
     assert ast.literal_eval(kwargs["weight"]) == -0.001
-    assert ast.unparse(kwargs["func"]) == ("amp_mdp" if robot == "bsrl" else "mdp") + ".ActionSecondOrderL2"
+    assert ast.unparse(kwargs["func"]) == "amp_mdp.ActionSecondOrderL2"
     assert ast.literal_eval(assignments["self.actions.joint_pos.clip"]) is None
 
 

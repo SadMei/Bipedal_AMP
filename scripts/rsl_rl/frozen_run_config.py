@@ -11,7 +11,58 @@ import copy
 import hashlib
 from pathlib import Path
 
-from t1_heading_ablation import configuration_differences, load_saved_config, resolved_scene_config
+import yaml
+
+
+class SavedConfigLoader(yaml.SafeLoader):
+    """Allow only the inert Python value tags emitted by Isaac config dumps."""
+
+
+SavedConfigLoader.add_constructor(
+    "tag:yaml.org,2002:python/tuple", lambda loader, node: tuple(loader.construct_sequence(node))
+)
+SavedConfigLoader.add_constructor(
+    "tag:yaml.org,2002:python/object/apply:builtins.slice",
+    lambda loader, node: slice(*loader.construct_sequence(node)),
+)
+
+
+def load_saved_config(path: Path) -> dict:
+    with path.open() as stream:
+        return yaml.load(stream, Loader=SavedConfigLoader)
+
+
+def configuration_differences(expected, actual, prefix="") -> list[dict]:
+    """Compare semantic config values, including serialized callables."""
+    if isinstance(expected, dict) and isinstance(actual, dict):
+        changes = []
+        for key in sorted(expected.keys() | actual.keys()):
+            changes.extend(configuration_differences(
+                expected.get(key), actual.get(key), f"{prefix}.{key}" if prefix else key
+            ))
+        return changes
+    if isinstance(expected, (list, tuple)) and isinstance(actual, (list, tuple)):
+        if len(expected) == len(actual):
+            changes = []
+            for index, (left, right) in enumerate(zip(expected, actual)):
+                changes.extend(configuration_differences(left, right, f"{prefix}[{index}]"))
+            return changes
+    if expected == actual:
+        return []
+    return [{"path": prefix, "baseline": expected, "experiment": actual}]
+
+
+def resolved_scene_config(config: dict) -> dict:
+    """Apply InteractiveScene's deterministic pre/post-init substitutions."""
+    result = copy.deepcopy(config)
+    scene = result["scene"]
+    for value in scene.values():
+        if isinstance(value, dict) and isinstance(value.get("prim_path"), str):
+            value["prim_path"] = value["prim_path"].replace("{ENV_REGEX_NS}", "/World/envs/env_.*")
+    if scene.get("terrain") is not None:
+        scene["terrain"]["num_envs"] = scene["num_envs"]
+        scene["terrain"]["env_spacing"] = scene["env_spacing"]
+    return result
 
 
 def disable_training_command_sampling(command_cfg) -> None:

@@ -14,7 +14,7 @@ from bsrl_r2_lafan_ablation import (  # noqa: E402
     ACCAD_FORWARD_MOTIONS, BASELINE_R2_RUN, LAFAN_MOTIONS, TASK_STYLE_LERP, VARIANTS,
     expected_configuration, motion_weights, prepare_dataset,
 )
-from t1_heading_ablation import configuration_differences, load_saved_config  # noqa: E402
+from frozen_run_config import configuration_differences, load_saved_config  # noqa: E402
 
 
 class R2LafanAblationTests(unittest.TestCase):
