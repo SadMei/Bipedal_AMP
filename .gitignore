@@ -23,10 +23,12 @@
 **/logs/**
 !**/logs/**/
 !**/logs/**/*.onnx
+# Local environment smoke tests are not deployment releases.
+**/*_environment_smoke_*/
 **/recordings/*
 **/output/*
 **/outputs/*
-**/videos/*
+**/videos/
 **/wandb/*
 **/.neptune/*
 **/*.pt

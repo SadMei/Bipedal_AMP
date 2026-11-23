@@ -43,6 +43,7 @@ import cli_args  # isort: skip
 parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
 parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
+parser.add_argument("--max_steps", type=int, default=0, help="Stop playback after this many steps; 0 runs indefinitely.")
 parser.add_argument(
     "--replay_audit_dir", type=str, default=None,
     help="Save effective replay configs and provenance in a new directory without changing the training run.",
@@ -608,6 +609,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             # reset recurrent states for episodes that have terminated
             policy_nn.reset(dones)
         timestep += 1
+        if args_cli.max_steps > 0 and timestep >= args_cli.max_steps:
+            print(f"[INFO] Playback completed {timestep} steps.")
+            break
         if args_cli.debug_state and (
             timestep % max(args_cli.debug_interval, 1) == 0 or bool(dones[0].item())
         ):

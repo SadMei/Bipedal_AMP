@@ -554,12 +554,15 @@ class BSRLAmpEnvCfg(LocomotionAmpEnvCfg):
         self.actions.joint_pos.preserve_order = True
 
         # 加载已经重定向到 BSRL 12 个关节的走路和跑步 AMP 数据。
-        self.motion_data.motion_dataset.motion_data_dir = os.path.join(
-            LEGGED_LAB_ROOT_DIR, "data", "MotionData", "bsrl_12dof", "amp", "walk_and_run"
+        self.motion_data.motion_dataset.motion_data_dir = os.environ.get(
+            "LEGGED_LAB_MOTION_DIR",
+            os.path.join(LEGGED_LAB_ROOT_DIR, "data", "MotionData", "bsrl_12dof", "amp", "walk_and_run"),
         )
         motion_files = sorted(
             file_name for file_name in os.listdir(self.motion_data.motion_dataset.motion_data_dir) if file_name.endswith(".pkl")
         )
+        if not motion_files:
+            raise ValueError(f"No AMP motion .pkl files in {self.motion_data.motion_dataset.motion_data_dir}")
         _validate_motion_files(self.motion_data.motion_dataset.motion_data_dir, motion_files)
         self.motion_data.motion_dataset.motion_data_weights = {
             os.path.splitext(file_name)[0]: 1.0 for file_name in motion_files

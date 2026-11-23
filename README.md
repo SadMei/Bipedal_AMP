@@ -77,6 +77,22 @@ https://github.com/user-attachments/assets/ed84a8a3-f349-44ac-9cfd-2baab2265a25
 
 ## 🚀 Usage
 
+### Local LAFAN launchers
+
+With this checkout's `.venv` already installed, `source env.sh` activates it and
+uses direct network connections. `ISAACLAB_PATH` defaults to the sibling
+`IsaacLab` checkout and can be overridden before sourcing.
+
+```bash
+./run_lafan.sh train bsrl --max_iterations 30000
+./run_lafan.sh play bsrl --checkpoint /path/to/model_24000.pt --video --max_steps 1000
+```
+
+The launchers also accept `g1` (the default robot). Converted LAFAN files are
+read from `../datasets/lafan1/amp/{bsrl_12dof,g1_29dof}`. Set `LAFAN_DATASET_ROOT`
+to change the shared LAFAN root, or `LEGGED_LAB_MOTION_DIR` to select an exact
+AMP motion directory containing its `manifest.json` and `.pkl` files.
+
 ### 1. Prepare Motion Data
 
 We have already provided some off-the-shelf motion data in the `source/legged_lab/legged_lab/data/MotionData` folder for testing. 

@@ -35,9 +35,13 @@ def prefer_local_source_tree(entry_file: str) -> tuple[pathlib.Path, str]:
 
 def prepare_agent_cfg_for_local_rsl_rl(agent_cfg, rsl_version: str):
     """Remove Isaac Lab fields unsupported by the repository's pre-v4 AMP fork."""
-    from isaaclab_rl.rsl_rl import handle_deprecated_rsl_rl_cfg
+    import isaaclab_rl.rsl_rl as rsl_rl_adapter
 
-    agent_cfg = handle_deprecated_rsl_rl_cfg(agent_cfg, rsl_version)
+    # Isaac Lab 2.3.1 already uses the configuration expected by RSL-RL 3.x.
+    # Newer Isaac Lab releases provide a migration helper for older runners.
+    migrate_cfg = getattr(rsl_rl_adapter, "handle_deprecated_rsl_rl_cfg", None)
+    if migrate_cfg is not None:
+        agent_cfg = migrate_cfg(agent_cfg, rsl_version)
     if version.parse(rsl_version) < version.parse("4.0.0") and hasattr(
         agent_cfg.algorithm, "share_cnn_encoders"
     ):

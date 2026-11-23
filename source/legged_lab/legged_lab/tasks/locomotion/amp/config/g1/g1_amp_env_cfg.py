@@ -148,6 +148,18 @@ class G1AmpEnvCfg(LocomotionAmpEnvCfg):
             "Walk_B4_-_Stand_to_Walk_Back_stageii": 1.0,
         }
 
+        # An explicit dataset path allows LAFAN and other converted motion sets
+        # without reusing the ACCAD-specific names above.
+        motion_dir = os.environ.get("LEGGED_LAB_MOTION_DIR")
+        if motion_dir:
+            self.motion_data.motion_dataset.motion_data_dir = os.path.abspath(motion_dir)
+            motion_names = sorted(
+                os.path.splitext(name)[0] for name in os.listdir(motion_dir) if name.endswith(".pkl")
+            )
+            if not motion_names:
+                raise ValueError(f"No AMP motion .pkl files in {motion_dir}")
+            self.motion_data.motion_dataset.motion_data_weights = dict.fromkeys(motion_names, 1.0)
+
         # ------------------------------------------------------
         # animation
         # ------------------------------------------------------
